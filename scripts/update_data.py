@@ -20,6 +20,39 @@ from pathlib import Path
 import pandas as pd
 
 
+def _first_valid_value(df: pd.DataFrame, column: str, default: str = "") -> str:
+    """Return the first non-null value from a column as string."""
+    if column not in df.columns:
+        return default
+    values = df[column].dropna()
+    if values.empty:
+        return default
+    return str(values.iloc[0])
+
+
+def _stock_metadata(df: pd.DataFrame, code: str) -> tuple[str, str]:
+    """Get stock symbol/name metadata from an existing local data file."""
+    symbol = _first_valid_value(df, "symbol", code)
+    name = _first_valid_value(df, "name", "")
+    return symbol, name
+
+
+def _fill_metadata(df: pd.DataFrame, symbol: str, name: str) -> bool:
+    """Fill missing symbol/name values in-place and report whether changed."""
+    changed = False
+    if "symbol" in df.columns:
+        mask = df["symbol"].isna()
+        if mask.any():
+            df.loc[mask, "symbol"] = symbol
+            changed = True
+    if "name" in df.columns and name:
+        mask = df["name"].isna()
+        if mask.any():
+            df.loc[mask, "name"] = name
+            changed = True
+    return changed
+
+
 def update_single_stock(
     code: str,
     data_dir: Path,
@@ -28,26 +61,25 @@ def update_single_stock(
 ) -> tuple[str, bool, str]:
     """更新单只股票数据，返回 (code, success, message)。"""
     file_path = data_dir / f"{code}.parquet"
+    had_file = file_path.exists()
 
     try:
-        if file_path.exists():
+        if had_file:
             df_existing = pd.read_parquet(file_path)
+            symbol, name = _stock_metadata(df_existing, code)
+            metadata_repaired = _fill_metadata(df_existing, symbol, name)
             if start_date is None:
                 last_date = df_existing.index.max()
                 # 只下载到昨天（今天的盘后数据可能尚未更新）
                 yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
                 new_start = (last_date + timedelta(days=1)).strftime("%Y%m%d")
                 if new_start > yesterday:
+                    if metadata_repaired:
+                        df_existing.to_parquet(file_path, compression="snappy")
+                        return code, True, "metadata repaired"
                     return code, True, "already up-to-date"
             else:
                 new_start = start_date
-                # 读取旧的 symbol 和 name 信息
-                if "symbol" in df_existing.columns:
-                    symbol = df_existing["symbol"].iloc[0]
-                    name = df_existing["name"].iloc[0] if "name" in df_existing.columns else ""
-                else:
-                    symbol = code
-                    name = ""
         else:
             new_start = start_date or "20100101"
             symbol = code
@@ -66,22 +98,32 @@ def update_single_stock(
             df_new = df_new.set_index("date")
 
         # 只保留与原始数据一致的列，避免多余列污染
-        if file_path.exists():
-            keep_cols = [c for c in df_existing.columns if c in df_new.columns]
-            df_new = df_new[keep_cols]
+        if had_file:
+            keep_cols = list(df_existing.columns)
         else:
             # 新文件：只保留标准列
             std_cols = ["open", "close", "high", "low", "volume", "symbol", "name"]
             keep_cols = [c for c in std_cols if c in df_new.columns]
-            df_new = df_new[keep_cols]
+            for col in ("symbol", "name"):
+                if col not in keep_cols:
+                    keep_cols.append(col)
 
         # 设置 symbol 和 name 列
-        if not file_path.exists() or "symbol" not in df_existing.columns:
+        if "symbol" in keep_cols and (
+            "symbol" not in df_new.columns or df_new["symbol"].isna().any()
+        ):
             df_new["symbol"] = symbol
-            if name:
-                df_new["name"] = name
+        if "name" in keep_cols and (
+            "name" not in df_new.columns or df_new["name"].isna().any()
+        ):
+            df_new["name"] = name
 
-        if file_path.exists():
+        missing_cols = [c for c in keep_cols if c not in df_new.columns]
+        if missing_cols:
+            return code, False, f"new data missing columns: {missing_cols}"
+        df_new = df_new[keep_cols]
+
+        if had_file:
             df_merged = pd.concat([df_existing, df_new])
             df_merged = df_merged[~df_merged.index.duplicated(keep="last")]
             df_merged.sort_index(inplace=True)
@@ -89,7 +131,7 @@ def update_single_stock(
             df_merged = df_new.sort_index()
 
         df_merged.to_parquet(file_path, compression="snappy")
-        rows_added = len(df_new) if not file_path.exists() else len(df_merged) - len(df_existing)
+        rows_added = len(df_merged) - len(df_existing) if had_file else len(df_new)
         return code, True, f"+{max(rows_added, 0)} rows"
 
     except Exception as e:
