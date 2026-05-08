@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__obsidian-vault__search_notes",
+      "Bash(python scripts/update_data.py --data-dir ./data --symbols 000001)",
+      "Bash(python scripts/update_data.py --data-dir ./data --symbols 000001,600000,300750 --start-date 20260501)",
+      "Bash(python scripts/update_data.py --data-dir ./data --symbols 000001,000002,000004,000006,000007,000008,000009,000010 --workers 4)",
+      "Bash(python -m pytest tests/test_trading_rules.py -v --tb=short)",
+      "Bash(python -m pytest tests/ -v --tb=short)",
+      "Bash(openspec status *)",
+      "Bash(echo \"exit: $?\")"
+    ]
+  }
+}
