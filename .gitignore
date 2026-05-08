@@ -32,3 +32,12 @@ build/
 .cargo/config.toml
 /data_catalog/
 /data/
+
+# Platform workspace (user strategies, real positions)
+/workspace/position_configs/
+/workspace/strategies/
+/workspace/position_rules/
+/workspace/jobs.db
+
+# Platform local config
+configs/platform.yaml
