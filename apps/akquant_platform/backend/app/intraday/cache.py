@@ -40,12 +40,45 @@ class IntradayCache:
         date_str = trade_date or self._today_str()
         return self._symbol_dir(symbol) / f"{date_str}.meta.json"
 
+    def _latest_cached_trade_date(self, symbol: str) -> str | None:
+        """Return the newest cached trade date still inside the retention window."""
+        symbol_dir = self._symbol_dir(symbol)
+        if not symbol_dir.exists():
+            return None
+
+        cutoff = datetime.now(tz=timezone(timedelta(hours=8))) - timedelta(
+            days=self._retention_days
+        )
+        cutoff_str = cutoff.strftime("%Y-%m-%d")
+        dates = sorted(
+            (
+                pq_file.stem
+                for pq_file in symbol_dir.glob("*.parquet")
+                if pq_file.stem >= cutoff_str
+            ),
+            reverse=True,
+        )
+        return dates[0] if dates else None
+
     def _today_str(self) -> str:
         return datetime.now(tz=timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
 
+    def _effective_trade_date(self) -> str:
+        """Return today's date, or yesterday's if before 9am CST (market not yet open)."""
+        now = datetime.now(tz=timezone(timedelta(hours=8)))
+        if now.hour < 9:
+            return (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        return now.strftime("%Y-%m-%d")
+
     def is_cache_valid(self, symbol: str) -> bool:
-        """Check if today's intraday cache exists and is within TTL."""
+        """Check if today's (or yesterday's before 9am) intraday cache exists and is within TTL."""
         meta_path = self._meta_path(symbol)
+        if not meta_path.exists():
+            meta_path = self._meta_path(symbol, trade_date=self._effective_trade_date())
+        if not meta_path.exists():
+            latest_trade_date = self._latest_cached_trade_date(symbol)
+            if latest_trade_date is not None:
+                meta_path = self._meta_path(symbol, trade_date=latest_trade_date)
         if not meta_path.exists():
             return False
 
@@ -60,8 +93,14 @@ class IntradayCache:
             return False
 
     def get_intraday_df(self, symbol: str) -> pd.DataFrame | None:
-        """Read today's intraday DataFrame from cache."""
+        """Read today's (or yesterday's if before 9am) intraday DataFrame from cache."""
         pq_path = self._parquet_path(symbol)
+        if not pq_path.exists():
+            pq_path = self._parquet_path(symbol, trade_date=self._effective_trade_date())
+        if not pq_path.exists():
+            latest_trade_date = self._latest_cached_trade_date(symbol)
+            if latest_trade_date is not None:
+                pq_path = self._parquet_path(symbol, trade_date=latest_trade_date)
         if not pq_path.exists():
             return None
         try:
@@ -124,10 +163,12 @@ class IntradayCache:
         symbol: str,
         df: pd.DataFrame,
         source: str = "akshare",
+        trade_date: str | None = None,
     ) -> None:
         """Save intraday DataFrame and meta.json."""
-        pq_path = self._parquet_path(symbol)
-        meta_path = self._meta_path(symbol)
+        cache_trade_date = trade_date or df.attrs.get("trade_date") or self._today_str()
+        pq_path = self._parquet_path(symbol, trade_date=cache_trade_date)
+        meta_path = self._meta_path(symbol, trade_date=cache_trade_date)
 
         pq_path.parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(pq_path, compression="snappy")
@@ -135,7 +176,7 @@ class IntradayCache:
         now_str = datetime.now(tz=timezone(timedelta(hours=8))).isoformat()
         meta = {
             "symbol": symbol,
-            "trade_date": self._today_str(),
+            "trade_date": cache_trade_date,
             "updated_at": now_str,
             "source": source,
             "rows": len(df),
@@ -183,10 +224,83 @@ def download_intraday(symbol: str) -> pd.DataFrame | None:
     except ImportError:
         return None
 
-    try:
-        df = ak.stock_intraday_em(symbol=symbol)
-        if df is not None and not df.empty:
-            return df
-    except Exception:
-        pass
+    for attempt in range(2):
+        try:
+            df = ak.stock_intraday_em(symbol=symbol)
+            if df is not None and not df.empty:
+                return df
+        except Exception:
+            if attempt == 0:
+                time.sleep(0.5)
+
+    for attempt in range(3):
+        try:
+            df = ak.stock_zh_a_hist_min_em(symbol=symbol, period="1", adjust="")
+            if df is not None and not df.empty:
+                df = _normalize_minute_intraday(df)
+                time_col = _find_time_column(df)
+                if time_col is not None:
+                    parsed = pd.to_datetime(df[time_col], errors="coerce")
+                    latest_date = parsed.dropna().dt.date.max()
+                    if latest_date is not None:
+                        df = df.loc[parsed.dt.date == latest_date].copy()
+                        df.attrs["trade_date"] = latest_date.strftime("%Y-%m-%d")
+                if not df.empty:
+                    return df
+        except Exception:
+            if attempt < 2:
+                time.sleep(0.5)
+
+    for attempt in range(3):
+        try:
+            df = ak.stock_zh_a_minute(symbol=_market_symbol(symbol), period="1", adjust="")
+            if df is not None and not df.empty:
+                df = df.rename(columns={"day": "time"}).copy()
+                time_col = _find_time_column(df)
+                if time_col is not None:
+                    parsed = pd.to_datetime(df[time_col], errors="coerce")
+                    latest_date = parsed.dropna().dt.date.max()
+                    if latest_date is not None:
+                        df = df.loc[parsed.dt.date == latest_date].copy()
+                        df.attrs["trade_date"] = latest_date.strftime("%Y-%m-%d")
+                if not df.empty:
+                    return df
+        except Exception:
+            if attempt < 2:
+                time.sleep(0.5)
+    return None
+
+
+def _market_symbol(symbol: str) -> str:
+    """Return a market-prefixed A-share symbol for minute endpoints."""
+    return f"sh{symbol}" if symbol.startswith("6") else f"sz{symbol}"
+
+
+def _normalize_minute_intraday(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize AkShare minute-bar columns into stable chart columns."""
+    normalized = df.copy()
+    if len(normalized.columns) >= 8:
+        rename_map = {
+            normalized.columns[0]: "time",
+            normalized.columns[1]: "open",
+            normalized.columns[2]: "close",
+            normalized.columns[3]: "high",
+            normalized.columns[4]: "low",
+            normalized.columns[5]: "volume",
+            normalized.columns[6]: "amount",
+            normalized.columns[7]: "avg_price",
+        }
+        normalized = normalized.rename(columns=rename_map)
+    return normalized
+
+
+def _find_time_column(df: pd.DataFrame) -> str | None:
+    """Find the timestamp column in an intraday DataFrame."""
+    for col in ["time", "datetime", "date", "时间"]:
+        if col in df.columns:
+            return col
+    for col in df.columns:
+        parsed = pd.to_datetime(df[col], errors="coerce")
+        if parsed.notna().any():
+            return str(col)
     return None

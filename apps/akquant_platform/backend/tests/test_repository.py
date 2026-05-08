@@ -77,6 +77,64 @@ def test_edit_transaction(repo: PositionRepository):
     assert audit[0].after["price"] == 10.6
 
 
+def test_edit_transaction_fee(repo: PositionRepository):
+    txn = repo.add_transaction("000001", "buy", "2026-05-08", 1000, 10.5, fee=0)
+    edited = repo.edit_transaction("000001", txn.id, fee=5.5)
+    assert edited is not None
+    assert edited.fee == 5.5
+    assert edited.revision == 2
+
+    pf = repo.load()
+    audit = pf.positions[0].audit_log
+    assert audit[0].before["fee"] == 0
+    assert audit[0].after["fee"] == 5.5
+
+
+def test_edit_transaction_side(repo: PositionRepository):
+    txn = repo.add_transaction("000001", "buy", "2026-05-08", 1000, 10.5)
+    edited = repo.edit_transaction("000001", txn.id, side="sell")
+    assert edited is not None
+    assert edited.side == "sell"
+
+    pf = repo.load()
+    assert pf.positions[0].transactions[0].side == "sell"
+
+
+def test_edit_transaction_notes_tags_source(repo: PositionRepository):
+    txn = repo.add_transaction("000001", "buy", "2026-05-08", 1000, 10.5)
+    edited = repo.edit_transaction(
+        "000001", txn.id,
+        notes="adjusted", tags=["a", "b"], source="broker",
+    )
+    assert edited is not None
+    assert edited.notes == "adjusted"
+    assert edited.tags == ["a", "b"]
+    assert edited.source == "broker"
+
+    pf = repo.load()
+    t = pf.positions[0].transactions[0]
+    assert t.notes == "adjusted"
+    assert t.tags == ["a", "b"]
+    assert t.source == "broker"
+
+
+def test_edit_transaction_no_change_skips_revision(repo: PositionRepository):
+    txn = repo.add_transaction("000001", "buy", "2026-05-08", 1000, 10.5)
+    edited = repo.edit_transaction("000001", txn.id, price=10.5)
+    assert edited is not None
+    assert edited.revision == 1  # no change, revision not bumped
+
+    pf = repo.load()
+    assert len(pf.positions[0].audit_log) == 0  # no audit entry
+
+
+def test_edit_voided_transaction_rejected(repo: PositionRepository):
+    txn = repo.add_transaction("000001", "buy", "2026-05-08", 1000, 10.5)
+    repo.void_transaction("000001", txn.id, "wrong entry")
+    with pytest.raises(ValueError, match="voided"):
+        repo.edit_transaction("000001", txn.id, price=12.0)
+
+
 def test_void_transaction(repo: PositionRepository):
     txn = repo.add_transaction("000001", "buy", "2026-05-08", 1000, 10.5)
     voided = repo.void_transaction("000001", txn.id, void_reason="输入错误")

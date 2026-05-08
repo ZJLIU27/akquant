@@ -120,6 +120,7 @@ export interface DailyRecord {
   high: number | null;
   low: number | null;
   volume: number | null;
+  volume_color: string;
   yellow_line: number | null;
   white_line: number | null;
   single_pin_short: number | null;
@@ -150,6 +151,23 @@ export interface JobStatus {
   result: string | null;
 }
 
+export interface StockSearchResult {
+  symbol: string;
+  name: string;
+  market: string;
+}
+
+export interface TransactionUpdatePayload {
+  side?: 'buy' | 'sell';
+  trade_date?: string;
+  quantity?: number;
+  price?: number;
+  fee?: number;
+  source?: string;
+  tags?: string[];
+  notes?: string;
+}
+
 // --- API functions ---
 
 export const api = {
@@ -172,7 +190,7 @@ export const api = {
       body: JSON.stringify(txn),
     }),
 
-  editTransaction: (symbol: string, txnId: string, updates: Record<string, unknown>) =>
+  editTransaction: (symbol: string, txnId: string, updates: TransactionUpdatePayload) =>
     request<Transaction>(`/positions/${symbol}/transactions/${txnId}`, {
       method: 'PATCH',
       body: JSON.stringify(updates),
@@ -220,4 +238,7 @@ export const api = {
 
   getJob: (jobId: string) =>
     request<JobStatus>(`/jobs/${jobId}`),
+
+  searchStocks: (q: string, limit = 10) =>
+    request<StockSearchResult[]>(`/stocks/search?q=${encodeURIComponent(q)}&limit=${limit}`),
 };

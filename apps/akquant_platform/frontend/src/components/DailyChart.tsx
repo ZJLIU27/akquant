@@ -52,12 +52,14 @@ export default function DailyChart({ data, avgCost }: Props) {
     seriesValue(r.high),
   ]);
   const volumes = records.map(r => seriesValue(r.volume));
+  const volumeColors = records.map(r => r.volume_color || colors.slate);
   const yellow = records.map(r => seriesValue(r.yellow_line));
   const white = records.map(r => seriesValue(r.white_line));
   const singleShort = records.map(r => seriesValue(r.single_pin_short));
   const singleMid = records.map(r => seriesValue(r.single_pin_mid));
   const singleMidLong = records.map(r => seriesValue(r.single_pin_mid_long));
   const singleLong = records.map(r => seriesValue(r.single_pin_long));
+  const brickOriginal = records.map(r => seriesValue(r.brick));
   const brickBase = records.map(r => seriesValue(r.brick_base));
   const brickDelta = records.map(r => seriesValue(r.brick_delta));
   const brickColors = records.map(r => r.brick_color || colors.red);
@@ -152,7 +154,9 @@ export default function DailyChart({ data, avgCost }: Props) {
       data: volumes,
       xAxisIndex: index,
       yAxisIndex: index,
-      itemStyle: { color: colors.slate },
+      itemStyle: {
+        color: (params: { dataIndex: number }) => volumeColors[params.dataIndex],
+      },
     });
   }
 
@@ -209,6 +213,16 @@ export default function DailyChart({ data, avgCost }: Props) {
     const index = panelIndex('brick');
     series.push(
       {
+        name: '砖形图',
+        type: 'line' as const,
+        data: brickOriginal,
+        xAxisIndex: index,
+        yAxisIndex: index,
+        symbol: 'none',
+        lineStyle: { width: 0, opacity: 0 },
+        itemStyle: { opacity: 0 },
+      },
+      {
         name: '砖形图基准',
         type: 'bar' as const,
         stack: 'brick',
@@ -220,7 +234,7 @@ export default function DailyChart({ data, avgCost }: Props) {
         tooltip: { show: false },
       },
       {
-        name: '砖形图',
+        name: '砖形图(变动)',
         type: 'bar' as const,
         stack: 'brick',
         data: brickDelta,
@@ -290,7 +304,7 @@ export default function DailyChart({ data, avgCost }: Props) {
           </label>
         ))}
       </div>
-      <ReactECharts option={option} style={{ height: chartHeight }} />
+      <ReactECharts option={option} style={{ height: chartHeight }} notMerge={true} />
     </div>
   );
 }

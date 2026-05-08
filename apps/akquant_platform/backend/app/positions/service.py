@@ -139,14 +139,20 @@ class PositionService:
             brick_value = brick.loc[idx]
             brick_base = brick_prev.loc[idx]
             brick_change = brick_delta.loc[idx]
+            
+            open_val = row.get("open")
+            close_val = row.get("close")
+            volume_color = "#F6465D" if (close_val is not None and open_val is not None and close_val >= open_val) else "#0ECB81"
+
             records.append(
                 {
                     "date": idx.strftime("%Y-%m-%d"),
-                    "open": _float_or_none(row.get("open")),
-                    "close": _float_or_none(row.get("close")),
+                    "open": _float_or_none(open_val),
+                    "close": _float_or_none(close_val),
                     "high": _float_or_none(row.get("high")),
                     "low": _float_or_none(row.get("low")),
                     "volume": _float_or_none(row.get("volume")),
+                    "volume_color": volume_color,
                     "yellow_line": _float_or_none(bbi.loc[idx]),
                     "white_line": _float_or_none(white.loc[idx]),
                     "single_pin_short": _float_or_none(single_pin["single_pin_short"].loc[idx]),

@@ -12,6 +12,8 @@ from .models import (
     PositionListResponse,
     PositionRule,
     Transaction,
+    TransactionUpdate,
+    VoidTransactionRequest,
 )
 from .service import PositionService
 
@@ -106,17 +108,20 @@ def add_transaction(symbol: str, txn: dict[str, Any]) -> Transaction:
 
 
 @router.patch("/positions/{symbol}/transactions/{transaction_id}")
-def edit_transaction(symbol: str, transaction_id: str, updates: dict[str, Any]) -> Transaction:
-    result = get_service().edit_transaction(symbol, transaction_id, **updates)
+def edit_transaction(symbol: str, transaction_id: str, updates: TransactionUpdate) -> Transaction:
+    payload = updates.model_dump(exclude_unset=True)
+    try:
+        result = get_service().edit_transaction(symbol, transaction_id, **payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if result is None:
         raise HTTPException(status_code=404, detail="Transaction not found")
     return result
 
 
 @router.post("/positions/{symbol}/transactions/{transaction_id}/void")
-def void_transaction(symbol: str, transaction_id: str, body: dict[str, Any] | None = None) -> Transaction:
-    reason = (body or {}).get("reason", "")
-    result = get_service().void_transaction(symbol, transaction_id, reason)
+def void_transaction(symbol: str, transaction_id: str, body: VoidTransactionRequest) -> Transaction:
+    result = get_service().void_transaction(symbol, transaction_id, body.reason)
     if result is None:
         raise HTTPException(status_code=404, detail="Transaction not found")
     return result

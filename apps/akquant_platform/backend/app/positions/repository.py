@@ -116,7 +116,11 @@ class PositionRepository:
         transaction_id: str,
         **updates: Any,
     ) -> Transaction | None:
-        """Edit a transaction. Updates revision, updated_at, and writes audit log."""
+        """Edit a transaction. Updates revision, updated_at, and writes audit log.
+
+        Returns None if position/transaction not found.
+        Raises ValueError if transaction is voided or no actual changes.
+        """
         pf = self.load()
         pos = None
         for p in pf.positions:
@@ -134,12 +138,25 @@ class PositionRepository:
         if txn is None:
             return None
 
-        # Record before state for audit
-        before = {}
+        if txn.voided:
+            raise ValueError("Cannot edit a voided transaction")
+
         editable_fields = {"price", "quantity", "fee", "trade_date", "side", "notes", "tags", "source"}
+
+        # Only record fields that actually change
+        before: dict[str, Any] = {}
+        after: dict[str, Any] = {}
         for field in editable_fields:
             if field in updates:
-                before[field] = getattr(txn, field)
+                old_val = getattr(txn, field)
+                new_val = updates[field]
+                if old_val != new_val:
+                    before[field] = old_val
+                    after[field] = new_val
+
+        if not before:
+            # No actual changes — return as-is without bumping revision
+            return txn
 
         # Apply updates
         for field, value in updates.items():
@@ -150,7 +167,6 @@ class PositionRepository:
         txn.revision += 1
 
         # Write audit log
-        after = {k: updates[k] for k in before}
         audit = AuditLogEntry(
             id=_new_id(),
             action="update_transaction",

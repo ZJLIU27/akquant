@@ -117,6 +117,27 @@ def test_edit_transaction(service: PositionService):
     assert edited.revision == 2
 
 
+def test_edit_transaction_full_fields(service: PositionService):
+    txn = service.add_buy("000001", "2026-05-08", 1000, 10.0, fee=0)
+    edited = service.edit_transaction(
+        "000001", txn.id,
+        side="sell", fee=5.0, notes="corrected", tags=["a"], source="broker",
+    )
+    assert edited is not None
+    assert edited.side == "sell"
+    assert edited.fee == 5.0
+    assert edited.notes == "corrected"
+    assert edited.tags == ["a"]
+    assert edited.source == "broker"
+
+
+def test_edit_voided_transaction_rejected(service: PositionService):
+    txn = service.add_buy("000001", "2026-05-08", 1000, 10.0)
+    service.void_transaction("000001", txn.id, "mistake")
+    with pytest.raises(ValueError, match="voided"):
+        service.edit_transaction("000001", txn.id, price=12.0)
+
+
 def test_void_transaction(service: PositionService):
     txn = service.add_buy("000001", "2026-05-08", 1000, 10.0)
     voided = service.void_transaction("000001", txn.id, "错误")

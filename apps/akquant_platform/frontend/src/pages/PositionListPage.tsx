@@ -74,6 +74,13 @@ export default function PositionListPage() {
   const [totalMv, setTotalMv] = useState(0);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [toast, setToast] = useState<{ msg: string; type: 'ok' | 'err' } | null>(null);
+
+  const showToast = (msg: string, type: 'ok' | 'err') => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3000);
+  };
 
   const load = useCallback(async () => {
     try {
@@ -89,12 +96,42 @@ export default function PositionListPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  const pollJob = async (jobId: string, attempts = 30): Promise<string> => {
+    for (let i = 0; i < attempts; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      const job = await api.getJob(jobId);
+      if (job.status === 'success') return 'success';
+      if (job.status === 'failed') throw new Error(job.error || '任务失败');
+    }
+    throw new Error('任务超时');
+  };
+
   const handleRefresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
     try {
-      await api.triggerIntradayUpdate(true);
-      setTimeout(load, 3000);
+      const res = await api.triggerIntradayUpdate(true);
+      if (res.status === 'already_running') {
+        showToast('已有刷新任务运行中，请稍候', 'err');
+        return;
+      }
+      if (res.status === 'no_symbols') {
+        showToast('没有需要刷新的持仓', 'err');
+        return;
+      }
+      if (res.status === 'all_cached') {
+        showToast('分时数据已是最新', 'ok');
+        return;
+      }
+      if (res.job_id) {
+        await pollJob(res.job_id);
+        showToast('分时数据刷新完成', 'ok');
+        await load();
+      }
     } catch (e) {
-      console.error('Refresh failed:', e);
+      showToast(e instanceof Error ? e.message : '刷新失败', 'err');
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -108,7 +145,13 @@ export default function PositionListPage() {
           </span>
         </h2>
         <div style={{ display: 'flex', gap: 12 }}>
-          <button style={btnStyle} onClick={handleRefresh}>刷新分时</button>
+          <button
+            style={{ ...btnStyle, opacity: refreshing ? 0.6 : 1, cursor: refreshing ? 'not-allowed' : 'pointer' }}
+            onClick={handleRefresh}
+            disabled={refreshing}
+          >
+            {refreshing ? '刷新中...' : '刷新分时'}
+          </button>
           <button style={btnStyle} onClick={() => setShowForm(true)}>新增交易</button>
         </div>
       </div>
@@ -179,6 +222,25 @@ export default function PositionListPage() {
           onClose={() => setShowForm(false)}
           onSaved={load}
         />
+      )}
+
+      {toast && (
+        <div style={{
+          position: 'fixed',
+          top: 20,
+          right: 20,
+          padding: '12px 24px',
+          borderRadius: 8,
+          fontSize: 14,
+          fontWeight: 600,
+          color: colors.white,
+          background: toast.type === 'ok' ? colors.green : colors.red,
+          boxShadow: shadow.medium,
+          zIndex: 9999,
+          transition: 'opacity 0.3s',
+        }}>
+          {toast.msg}
+        </div>
       )}
     </div>
   );

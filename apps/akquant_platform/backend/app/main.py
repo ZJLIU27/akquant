@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from .positions.routes import router as positions_router
 from .intraday.routes import router as data_router
 from .jobs.routes import router as jobs_router
+from .stocks.routes import router as stocks_router
 
 app = FastAPI(title="AKQuant Platform", version="0.1.0")
 
@@ -15,6 +16,7 @@ app = FastAPI(title="AKQuant Platform", version="0.1.0")
 app.include_router(positions_router)
 app.include_router(data_router)
 app.include_router(jobs_router)
+app.include_router(stocks_router)
 
 # Serve frontend static files in production
 _frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"

@@ -11,7 +11,7 @@ export default function IntradayChart({ data, avgCost }: Props) {
   if (!data || !data.data || data.status === 'missing') {
     return (
       <div style={{ padding: 40, textAlign: 'center', color: colors.slate }}>
-        当日分时数据缺失，点击"刷新分时"获取
+        分时数据暂无，请在持仓列表页点击"刷新分时"获取
       </div>
     );
   }

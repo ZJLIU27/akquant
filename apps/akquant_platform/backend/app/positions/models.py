@@ -62,6 +62,25 @@ class Position(BaseModel):
     audit_log: list[AuditLogEntry] = Field(default_factory=list)
 
 
+class TransactionUpdate(BaseModel):
+    """Payload for editing a transaction."""
+
+    side: Literal["buy", "sell"] | None = None
+    trade_date: date | None = None
+    quantity: int | None = Field(default=None, gt=0)
+    price: float | None = Field(default=None, gt=0)
+    fee: float | None = Field(default=None, ge=0)
+    source: str | None = None
+    tags: list[str] | None = None
+    notes: str | None = None
+
+
+class VoidTransactionRequest(BaseModel):
+    """Payload for voiding a transaction."""
+
+    reason: str = ""
+
+
 class PositionFile(BaseModel):
     """Top-level YAML structure for the positions file."""
 

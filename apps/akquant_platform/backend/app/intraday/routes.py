@@ -45,6 +45,8 @@ def _run_intraday_update(job_id: str, symbols: list[str], config: PlatformConfig
             if df is not None:
                 cache.save_intraday(symbol, df)
                 results[symbol] = "ok"
+            elif cache.get_intraday_df(symbol) is not None:
+                results[symbol] = "cached"
             else:
                 results[symbol] = "failed"
         cache.cleanup_old_cache()

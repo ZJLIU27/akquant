@@ -12,8 +12,7 @@ AKQuant 数据增量更新工具.
 
 import argparse
 import sys
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -53,6 +52,50 @@ def _fill_metadata(df: pd.DataFrame, symbol: str, name: str) -> bool:
     return changed
 
 
+def _normalize_new_volume(df_new: pd.DataFrame) -> bool:
+    """Convert AKShare daily share volume to the local lot-based unit."""
+    if "volume" not in df_new.columns:
+        return False
+
+    new_volume = pd.to_numeric(df_new["volume"], errors="coerce").dropna()
+    if new_volume.empty:
+        return False
+
+    # stock_zh_a_daily returns shares, while the local parquet data uses lots.
+    df_new["volume"] = pd.to_numeric(df_new["volume"], errors="coerce") / 100
+    return True
+
+
+def _repair_volume_unit_spikes(df: pd.DataFrame) -> int:
+    """Repair rows that were appended in shares to a lot-based volume series."""
+    if "volume" not in df.columns:
+        return 0
+
+    volumes = pd.to_numeric(df["volume"], errors="coerce").copy()
+    repaired_count = 0
+    history: list[float] = []
+    repaired_values = volumes.copy()
+
+    for idx, value in volumes.items():
+        if pd.isna(value) or value <= 0:
+            continue
+
+        if len(history) >= 20:
+            baseline = pd.Series(history[-60:]).median()
+            fixed_value = value / 100
+            fixed_ratio = fixed_value / baseline
+            if baseline > 0 and value / baseline >= 50 and 0.2 <= fixed_ratio <= 5:
+                repaired_values.loc[idx] = fixed_value
+                value = fixed_value
+                repaired_count += 1
+
+        history.append(float(value))
+
+    if repaired_count:
+        df["volume"] = repaired_values
+    return repaired_count
+
+
 def update_single_stock(
     code: str,
     data_dir: Path,
@@ -68,13 +111,21 @@ def update_single_stock(
             df_existing = pd.read_parquet(file_path)
             symbol, name = _stock_metadata(df_existing, code)
             metadata_repaired = _fill_metadata(df_existing, symbol, name)
+            volume_repairs = _repair_volume_unit_spikes(df_existing)
             if start_date is None:
                 last_date = df_existing.index.max()
                 new_start = (last_date + timedelta(days=1)).strftime("%Y%m%d")
                 if new_start > end_date:
-                    if metadata_repaired:
+                    if metadata_repaired or volume_repairs:
                         df_existing.to_parquet(file_path, compression="snappy")
-                        return code, True, "metadata repaired"
+                        if metadata_repaired and not volume_repairs:
+                            return code, True, "metadata repaired"
+                        repairs = []
+                        if metadata_repaired:
+                            repairs.append("metadata")
+                        if volume_repairs:
+                            repairs.append(f"volume x{volume_repairs}")
+                        return code, True, f"repaired {'/'.join(repairs)}"
                     return code, True, "already up-to-date"
             else:
                 new_start = start_date
@@ -105,6 +156,8 @@ def update_single_stock(
             for col in ("symbol", "name"):
                 if col not in keep_cols:
                     keep_cols.append(col)
+
+        _normalize_new_volume(df_new)
 
         # 设置 symbol 和 name 列
         if "symbol" in keep_cols and (
@@ -182,6 +235,17 @@ def main() -> None:
         action="store_true",
         help="只更新到昨天，适合需要避开当天盘后未完成数据的场景",
     )
+    parser.add_argument(
+        "--progress-seconds",
+        type=float,
+        default=10.0,
+        help="无任务完成时打印进度心跳的间隔秒数 (默认: 10)",
+    )
+    parser.add_argument(
+        "--print-skips",
+        action="store_true",
+        help="打印每一只已是最新的股票，默认只定期打印汇总进度",
+    )
     args = parser.parse_args()
 
     if args.end_date and args.until_yesterday:
@@ -213,12 +277,16 @@ def main() -> None:
         end_date = args.end_date or today
 
     total = len(symbols)
-    print(f"Updating {total} stocks (end={end_date}, workers={args.workers})")
+    print(
+        f"Updating {total} stocks (end={end_date}, workers={args.workers})",
+        flush=True,
+    )
 
     success_count = 0
     skip_count = 0
     fail_count = 0
     failed_symbols = []
+    completed_count = 0
 
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = {
@@ -228,24 +296,55 @@ def main() -> None:
             for code in symbols
         }
 
-        for i, future in enumerate(as_completed(futures), 1):
-            code, ok, msg = future.result()
-            status = "OK" if ok else "FAIL"
-            if "up-to-date" in msg:
-                status = "SKIP"
-                skip_count += 1
-            elif ok:
-                success_count += 1
-            else:
-                fail_count += 1
-                failed_symbols.append(code)
+        pending = set(futures)
+        while pending:
+            done, pending = wait(
+                pending,
+                timeout=max(args.progress_seconds, 0.1),
+                return_when=FIRST_COMPLETED,
+            )
+            if not done:
+                print(
+                    "[progress] "
+                    f"{completed_count}/{total} done, "
+                    f"{len(pending)} pending "
+                    f"({success_count} updated, {skip_count} skipped, "
+                    f"{fail_count} failed)",
+                    flush=True,
+                )
+                continue
 
-            if status != "SKIP" or i == total:
-                print(f"[{i}/{total}] {code}: {status} ({msg})")
+            for future in done:
+                code, ok, msg = future.result()
+                completed_count += 1
+                status = "OK" if ok else "FAIL"
+                if "up-to-date" in msg:
+                    status = "SKIP"
+                    skip_count += 1
+                elif ok:
+                    success_count += 1
+                else:
+                    fail_count += 1
+                    failed_symbols.append(code)
 
-    print(f"\nDone: {success_count} updated, {skip_count} skipped, {fail_count} failed")
+                should_print = (
+                    status != "SKIP"
+                    or args.print_skips
+                    or completed_count == total
+                    or completed_count % 100 == 0
+                )
+                if should_print:
+                    print(
+                        f"[{completed_count}/{total}] {code}: {status} ({msg})",
+                        flush=True,
+                    )
+
+    print(
+        f"\nDone: {success_count} updated, {skip_count} skipped, {fail_count} failed",
+        flush=True,
+    )
     if failed_symbols:
-        print(f"Failed: {', '.join(failed_symbols[:20])}")
+        print(f"Failed: {', '.join(failed_symbols[:20])}", flush=True)
 
 
 if __name__ == "__main__":

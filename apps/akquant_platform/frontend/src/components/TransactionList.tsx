@@ -8,10 +8,47 @@ interface Props {
   onReload: () => void;
 }
 
+interface Draft {
+  side: 'buy' | 'sell';
+  trade_date: string;
+  quantity: string;
+  price: string;
+  fee: string;
+  source: string;
+  tagsText: string;
+  notes: string;
+}
+
+function txnToDraft(txn: Transaction): Draft {
+  return {
+    side: txn.side,
+    trade_date: txn.trade_date,
+    quantity: String(txn.quantity),
+    price: String(txn.price),
+    fee: String(txn.fee),
+    source: txn.source,
+    tagsText: txn.tags.join(', '),
+    notes: txn.notes,
+  };
+}
+
+function parseApiError(e: unknown): string {
+  if (e instanceof Error) {
+    try {
+      const parsed = JSON.parse(e.message);
+      if (parsed.detail) return String(parsed.detail);
+    } catch { /* not JSON */ }
+    return e.message;
+  }
+  return String(e);
+}
+
 export default function TransactionList({ transactions, symbol, onReload }: Props) {
   const [editing, setEditing] = useState<string | null>(null);
-  const [editPrice, setEditPrice] = useState('');
-  const [editQty, setEditQty] = useState('');
+  const [draft, setDraft] = useState<Draft>({
+    side: 'buy', trade_date: '', quantity: '', price: '', fee: '0',
+    source: 'manual', tagsText: '', notes: '',
+  });
 
   const handleVoid = async (txnId: string) => {
     const reason = prompt('作废原因:');
@@ -20,26 +57,31 @@ export default function TransactionList({ transactions, symbol, onReload }: Prop
       await api.voidTransaction(symbol, txnId, reason);
       onReload();
     } catch (e) {
-      alert(`作废失败: ${e}`);
+      alert(`作废失败: ${parseApiError(e)}`);
     }
   };
 
   const startEdit = (txn: Transaction) => {
     setEditing(txn.id);
-    setEditPrice(String(txn.price));
-    setEditQty(String(txn.quantity));
+    setDraft(txnToDraft(txn));
   };
 
   const saveEdit = async (txnId: string) => {
     try {
       await api.editTransaction(symbol, txnId, {
-        price: parseFloat(editPrice),
-        quantity: parseInt(editQty),
+        side: draft.side,
+        trade_date: draft.trade_date,
+        quantity: parseInt(draft.quantity, 10),
+        price: parseFloat(draft.price),
+        fee: parseFloat(draft.fee) || 0,
+        source: draft.source || 'manual',
+        tags: draft.tagsText.split(',').map(s => s.trim()).filter(Boolean),
+        notes: draft.notes,
       });
       setEditing(null);
       onReload();
     } catch (e) {
-      alert(`编辑失败: ${e}`);
+      alert(`编辑失败: ${parseApiError(e)}`);
     }
   };
 
@@ -65,31 +107,74 @@ export default function TransactionList({ transactions, symbol, onReload }: Prop
       <tbody>
         {sorted.map(txn => (
           <tr key={txn.id} style={{ opacity: txn.voided ? 0.4 : 1 }}>
-            <td style={cellStyle}>{txn.trade_date}</td>
             <td style={cellStyle}>
-              <span style={{
-                color: txn.side === 'buy' ? colors.green : colors.red,
-                fontWeight: 600,
-              }}>
-                {txn.side === 'buy' ? '买入' : '卖出'}
-              </span>
+              {editing === txn.id ? (
+                <input type="date" value={draft.trade_date}
+                  onChange={e => setDraft(d => ({ ...d, trade_date: e.target.value }))}
+                  style={inputStyle} />
+              ) : txn.trade_date}
             </td>
             <td style={cellStyle}>
               {editing === txn.id ? (
-                <input value={editQty} onChange={e => setEditQty(e.target.value)}
+                <div style={{ display: 'flex', gap: 4 }}>
+                  {(['buy', 'sell'] as const).map(s => (
+                    <button key={s} type="button"
+                      onClick={() => setDraft(d => ({ ...d, side: s }))}
+                      style={{
+                        border: 'none', borderRadius: 4, padding: '2px 10px', fontSize: 12,
+                        fontWeight: 600, cursor: 'pointer',
+                        background: draft.side === s ? (s === 'buy' ? colors.green : colors.red) : colors.snow,
+                        color: draft.side === s ? colors.white : colors.slate,
+                      }}>
+                      {s === 'buy' ? '买入' : '卖出'}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <span style={{
+                  color: txn.side === 'buy' ? colors.green : colors.red,
+                  fontWeight: 600,
+                }}>
+                  {txn.side === 'buy' ? '买入' : '卖出'}
+                </span>
+              )}
+            </td>
+            <td style={cellStyle}>
+              {editing === txn.id ? (
+                <input value={draft.quantity} onChange={e => setDraft(d => ({ ...d, quantity: e.target.value }))}
                   style={inputStyle} type="number" />
               ) : txn.quantity}
             </td>
             <td style={cellStyle}>
               {editing === txn.id ? (
-                <input value={editPrice} onChange={e => setEditPrice(e.target.value)}
+                <input value={draft.price} onChange={e => setDraft(d => ({ ...d, price: e.target.value }))}
                   style={inputStyle} type="number" step="0.01" />
               ) : txn.price.toFixed(2)}
             </td>
-            <td style={cellStyle}>{txn.fee.toFixed(2)}</td>
-            <td style={cellStyle}>{txn.source}</td>
-            <td style={cellStyle}>{txn.tags.join(', ')}</td>
-            <td style={cellStyle}>{txn.notes}</td>
+            <td style={cellStyle}>
+              {editing === txn.id ? (
+                <input value={draft.fee} onChange={e => setDraft(d => ({ ...d, fee: e.target.value }))}
+                  style={inputStyle} type="number" step="0.01" />
+              ) : txn.fee.toFixed(2)}
+            </td>
+            <td style={cellStyle}>
+              {editing === txn.id ? (
+                <input value={draft.source} onChange={e => setDraft(d => ({ ...d, source: e.target.value }))}
+                  style={inputStyle} />
+              ) : txn.source}
+            </td>
+            <td style={cellStyle}>
+              {editing === txn.id ? (
+                <input value={draft.tagsText} onChange={e => setDraft(d => ({ ...d, tagsText: e.target.value }))}
+                  style={inputStyle} placeholder="逗号分隔" />
+              ) : txn.tags.join(', ')}
+            </td>
+            <td style={cellStyle}>
+              {editing === txn.id ? (
+                <input value={draft.notes} onChange={e => setDraft(d => ({ ...d, notes: e.target.value }))}
+                  style={inputStyle} />
+              ) : txn.notes}
+            </td>
             <td style={cellStyle}>v{txn.revision}</td>
             <td style={cellStyle}>
               {txn.voided ? (
