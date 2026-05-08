@@ -1,0 +1,9 @@
+workspace_dir: "./workspace"
+registry_file: "./workspace/registry.yaml"
+daily_data_dir: "./data"
+intraday_data_dir: "./data/intraday"
+positions_file: "./workspace/position_configs/current_positions.yaml"
+backtest_output_dir: "./outputs/backtests"
+timezone: "Asia/Shanghai"
+intraday_cache_ttl_seconds: 300
+intraday_cache_retention_days: 7

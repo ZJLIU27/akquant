@@ -70,10 +70,8 @@ def update_single_stock(
             metadata_repaired = _fill_metadata(df_existing, symbol, name)
             if start_date is None:
                 last_date = df_existing.index.max()
-                # 只下载到昨天（今天的盘后数据可能尚未更新）
-                yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
                 new_start = (last_date + timedelta(days=1)).strftime("%Y%m%d")
-                if new_start > yesterday:
+                if new_start > end_date:
                     if metadata_repaired:
                         df_existing.to_parquet(file_path, compression="snappy")
                         return code, True, "metadata repaired"
@@ -173,7 +171,25 @@ def main() -> None:
         default=None,
         help="强制指定起始日期，格式 YYYYMMDD (默认: 自动检测最后日期+1)",
     )
+    parser.add_argument(
+        "--end-date",
+        type=str,
+        default=None,
+        help="指定结束日期，格式 YYYYMMDD (默认: 今天)",
+    )
+    parser.add_argument(
+        "--until-yesterday",
+        action="store_true",
+        help="只更新到昨天，适合需要避开当天盘后未完成数据的场景",
+    )
     args = parser.parse_args()
+
+    if args.end_date and args.until_yesterday:
+        print(
+            "Error: --end-date and --until-yesterday cannot be used together",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     data_dir = Path(args.data_dir).resolve()
     if not data_dir.exists():
@@ -191,10 +207,13 @@ def main() -> None:
         sys.exit(1)
 
     today = datetime.now().strftime("%Y%m%d")
-    # end_date 使用昨天，确保盘后数据已更新
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+    if args.until_yesterday:
+        end_date = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+    else:
+        end_date = args.end_date or today
+
     total = len(symbols)
-    print(f"Updating {total} stocks (end={yesterday}, workers={args.workers})")
+    print(f"Updating {total} stocks (end={end_date}, workers={args.workers})")
 
     success_count = 0
     skip_count = 0
@@ -204,7 +223,7 @@ def main() -> None:
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = {
             executor.submit(
-                update_single_stock, code, data_dir, yesterday, args.start_date
+                update_single_stock, code, data_dir, end_date, args.start_date
             ): code
             for code in symbols
         }

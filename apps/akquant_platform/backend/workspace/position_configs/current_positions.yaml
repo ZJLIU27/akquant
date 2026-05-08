@@ -1,0 +1,23 @@
+positions:
+- id: cc39b742-7ff2-4846-bd67-bc34b7faedc9
+  symbol: '601002'
+  name: 晋亿实业
+  notes: ''
+  rules: []
+  transactions:
+  - id: 21bf02b4-80d7-4774-957a-03920850ea88
+    side: buy
+    trade_date: '2026-05-08'
+    quantity: 8200
+    price: 6.111
+    fee: 10.0
+    source: manual
+    tags: []
+    notes: ''
+    created_at: '2026-05-08T17:35:39.276728'
+    updated_at: '2026-05-08T17:35:39.276728'
+    revision: 1
+    voided: false
+    voided_at: null
+    void_reason: null
+  audit_log: []
