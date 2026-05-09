@@ -174,3 +174,79 @@ def test_update_single_stock_fetches_requested_end_date(monkeypatch, tmp_path):
     assert (code, ok, message) == ("000001", True, "+1 rows")
     updated = pd.read_parquet(data_path)
     assert pd.Timestamp("2026-05-08") in updated.index
+
+
+def test_update_single_stock_normalizes_new_share_volume(monkeypatch, tmp_path):
+    module = _load_update_data_module()
+    data_path = tmp_path / "000001.parquet"
+    existing = pd.DataFrame(
+        {
+            "open": [10.0, 10.2],
+            "close": [10.1, 10.3],
+            "high": [10.4, 10.5],
+            "low": [9.9, 10.0],
+            "volume": [1_000_000.12, 1_200_000.34],
+            "symbol": ["sz000001", "sz000001"],
+            "name": ["平安银行", "平安银行"],
+        },
+        index=pd.DatetimeIndex(
+            [pd.Timestamp("2026-05-06"), pd.Timestamp("2026-05-07")], name="date"
+        ),
+    )
+    existing.to_parquet(data_path)
+
+    def fetch_akshare_symbol(symbol, start_date, end_date, adjust):
+        return pd.DataFrame(
+            {
+                "date": [pd.Timestamp("2026-05-08")],
+                "open": [10.4],
+                "close": [10.5],
+                "high": [10.6],
+                "low": [10.1],
+                "volume": [110_000_056.0],
+            }
+        )
+
+    akquant_module = types.ModuleType("akquant")
+    utils_module = types.ModuleType("akquant.utils")
+    utils_module.fetch_akshare_symbol = fetch_akshare_symbol
+    akquant_module.utils = utils_module
+    monkeypatch.setitem(sys.modules, "akquant", akquant_module)
+    monkeypatch.setitem(sys.modules, "akquant.utils", utils_module)
+
+    code, ok, message = module.update_single_stock(
+        "000001", tmp_path, "20260508", None
+    )
+
+    assert (code, ok, message) == ("000001", True, "+1 rows")
+    updated = pd.read_parquet(data_path)
+    assert updated.loc[pd.Timestamp("2026-05-08"), "volume"] == 1_100_000.56
+
+
+def test_update_single_stock_repairs_existing_share_volume_spikes(tmp_path):
+    module = _load_update_data_module()
+    data_path = tmp_path / "000001.parquet"
+    dates = pd.date_range("2026-04-01", periods=23, freq="D")
+    volumes = [1_000_000.0 + i for i in range(20)]
+    volumes.extend([121_638_755.0, 93_695_806.0, 79_881_986.0])
+    existing = pd.DataFrame(
+        {
+            "open": [10.0] * 23,
+            "close": [10.1] * 23,
+            "high": [10.2] * 23,
+            "low": [9.9] * 23,
+            "volume": volumes,
+            "symbol": ["sz000001"] * 23,
+            "name": ["平安银行"] * 23,
+        },
+        index=pd.DatetimeIndex(dates, name="date"),
+    )
+    existing.to_parquet(data_path)
+
+    last_date = dates[-1].strftime("%Y%m%d")
+    code, ok, message = module.update_single_stock("000001", tmp_path, last_date, None)
+
+    assert (code, ok) == ("000001", True)
+    assert message == "repaired volume x3"
+    updated = pd.read_parquet(data_path)
+    assert updated["volume"].tail(3).tolist() == [1_216_387.55, 936_958.06, 798_819.86]
