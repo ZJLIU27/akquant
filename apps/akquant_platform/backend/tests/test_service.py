@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from app.config import PlatformConfig
 from app.positions.service import PositionService
 
@@ -100,6 +99,7 @@ def test_get_daily_chart(service: PositionService, tmp_path: Path):
     assert result["status"] == "ok"
     assert result["rows"] == 130
     last = result["data"][-1]
+    assert last["bbi"] is not None
     assert last["yellow_line"] is not None
     assert last["white_line"] is not None
     assert "single_pin_short" in last
@@ -120,8 +120,13 @@ def test_edit_transaction(service: PositionService):
 def test_edit_transaction_full_fields(service: PositionService):
     txn = service.add_buy("000001", "2026-05-08", 1000, 10.0, fee=0)
     edited = service.edit_transaction(
-        "000001", txn.id,
-        side="sell", fee=5.0, notes="corrected", tags=["a"], source="broker",
+        "000001",
+        txn.id,
+        side="sell",
+        fee=5.0,
+        notes="corrected",
+        tags=["a"],
+        source="broker",
     )
     assert edited is not None
     assert edited.side == "sell"

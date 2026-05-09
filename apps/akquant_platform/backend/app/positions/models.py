@@ -60,6 +60,13 @@ class Position(BaseModel):
     strategy_id: str = ""
     strategy_tags: list[str] = Field(default_factory=list)
     strategy_note_paths: list[str] = Field(default_factory=list)
+    buy_reason: str = ""
+    expected_level: str = ""
+    initial_stop_loss: float | None = None
+    target_price: float | None = None
+    allow_t: bool | None = None
+    max_holding_days: int | None = None
+    obsidian_note_path: str = ""
     notes: str = ""
     rules: list[PositionRule] = Field(default_factory=list)
     transactions: list[Transaction] = Field(default_factory=list)

@@ -17,7 +17,9 @@ import sys
 from pathlib import Path
 
 # Add backend to path so we can import app modules
-_backend_dir = Path(__file__).resolve().parents[1] / "apps" / "akquant_platform" / "backend"
+_backend_dir = (
+    Path(__file__).resolve().parents[1] / "apps" / "akquant_platform" / "backend"
+)
 if str(_backend_dir) not in sys.path:
     sys.path.insert(0, str(_backend_dir))
 
@@ -40,7 +42,9 @@ def cmd_buy(service: PositionService, args: argparse.Namespace) -> None:
         name=args.name,
         notes=args.notes,
     )
-    print(f"Buy transaction added: {txn.id[:8]}... {args.symbol} {args.quantity}@{args.price}")
+    print(
+        f"Buy transaction added: {txn.id[:8]}... {args.symbol} {args.quantity}@{args.price}"
+    )
 
 
 def cmd_sell(service: PositionService, args: argparse.Namespace) -> None:
@@ -53,9 +57,14 @@ def cmd_sell(service: PositionService, args: argparse.Namespace) -> None:
         notes=args.notes,
     )
     if txn is None:
-        print(f"Error: cannot sell {args.quantity} of {args.symbol} (insufficient holdings or position not found)", file=sys.stderr)
+        print(
+            f"Error: cannot sell {args.quantity} of {args.symbol} (insufficient holdings or position not found)",
+            file=sys.stderr,
+        )
         sys.exit(1)
-    print(f"Sell transaction added: {txn.id[:8]}... {args.symbol} {args.quantity}@{args.price}")
+    print(
+        f"Sell transaction added: {txn.id[:8]}... {args.symbol} {args.quantity}@{args.price}"
+    )
 
 
 def cmd_list(service: PositionService) -> None:
@@ -64,7 +73,9 @@ def cmd_list(service: PositionService) -> None:
         print("No positions.")
         return
 
-    print(f"{'Symbol':<8} {'Name':<10} {'Qty':>6} {'AvgCost':>10} {'Price':>10} {'MV':>12} {'PnL':>12} {'Weight':>8} {'Status':<8}")
+    print(
+        f"{'Symbol':<8} {'Name':<10} {'Qty':>6} {'AvgCost':>10} {'Price':>10} {'MV':>12} {'PnL':>12} {'Weight':>8} {'Status':<8}"
+    )
     print("-" * 94)
     for p in result.positions:
         price_str = f"{p.latest_price:.2f}" if p.latest_price else "N/A"
@@ -95,6 +106,8 @@ def cmd_ai_context(service: PositionService, args: argparse.Namespace) -> None:
         all_open=args.all_open,
         include_transactions=not args.no_transactions,
         include_rule_results=not args.no_rule_results,
+        include_daily=args.include_daily,
+        days=args.days,
     )
     if args.format == "json":
         print(json.dumps(context, ensure_ascii=False, indent=2, sort_keys=False))
@@ -107,7 +120,9 @@ def main() -> None:
         description="AKQuant 持仓管理 CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--config", type=str, default=None, help="Platform config file path")
+    parser.add_argument(
+        "--config", type=str, default=None, help="Platform config file path"
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # init
@@ -145,10 +160,29 @@ def main() -> None:
     )
     ai_target = ai_parser.add_mutually_exclusive_group(required=True)
     ai_target.add_argument("--symbol", help="Export one symbol")
-    ai_target.add_argument("--all-open", action="store_true", help="Export all open positions")
+    ai_target.add_argument(
+        "--all-open", action="store_true", help="Export all open positions"
+    )
     ai_parser.add_argument("--format", choices=["json"], default="json")
     ai_parser.add_argument("--no-transactions", action="store_true")
     ai_parser.add_argument("--no-rule-results", action="store_true")
+    ai_parser.add_argument(
+        "--include-rule-results",
+        action="store_false",
+        dest="no_rule_results",
+        help="Include full rule_results in each exported position (default)",
+    )
+    ai_parser.add_argument(
+        "--include-daily",
+        action="store_true",
+        help="Include daily OHLCV and indicator series in market.daily",
+    )
+    ai_parser.add_argument(
+        "--days",
+        type=int,
+        default=130,
+        help="Number of daily bars to include when --include-daily is set",
+    )
 
     args = parser.parse_args()
     config = load_config(args.config)

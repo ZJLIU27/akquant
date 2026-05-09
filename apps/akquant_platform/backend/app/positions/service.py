@@ -91,9 +91,7 @@ class PositionService:
         if pos is None:
             return None
 
-        price, source = self.cache.resolve_price(
-            symbol, self.config.daily_data_dir
-        )
+        price, source = self.cache.resolve_price(symbol, self.config.daily_data_dir)
         summary = calculate_position(pos, price, source)
 
         daily_df = self._load_daily_df(symbol)
@@ -112,9 +110,7 @@ class PositionService:
                 "indicators": indicators,
             }
 
-        rule_results = evaluate_rules(
-            pos, summary, market, pos.rules, self.registry
-        )
+        rule_results = evaluate_rules(pos, summary, market, pos.rules, self.registry)
 
         return PositionDetail(
             position=pos,
@@ -128,6 +124,8 @@ class PositionService:
         all_open: bool = False,
         include_transactions: bool = True,
         include_rule_results: bool = True,
+        include_daily: bool = False,
+        days: int = 130,
     ) -> dict[str, Any]:
         """Export read-only position context for external agents."""
         generated_at = _now_iso()
@@ -140,13 +138,39 @@ class PositionService:
                     continue
                 detail = self.get_position_detail(summary.symbol)
                 raw_position = detail.position if detail is not None else None
-                positions.append(
-                    self._position_ai_summary(
-                        summary,
-                        position=raw_position,
-                        include_rule_summary=True,
-                    )
+                position_context = self._position_ai_summary(
+                    summary,
+                    position=raw_position,
+                    include_rule_summary=True,
                 )
+                if detail is not None:
+                    position_context["holding_days"] = self._holding_days(
+                        detail.position
+                    )
+                    position_context["rule_application_state"] = (
+                        self._rule_application_state(detail.position)
+                    )
+                    position_context["technical_summary"] = self._technical_summary(
+                        detail.position, detail.summary
+                    )
+                    if include_rule_results:
+                        position_context["rule_results"] = [
+                            self._rule_result_ai_context(
+                                r,
+                                {rule.id: rule for rule in detail.position.rules}.get(
+                                    r.rule_id
+                                ),
+                                detail.position,
+                            )
+                            for r in detail.rule_results
+                        ]
+                    if include_daily:
+                        position_context["market"] = self._market_ai_context(
+                            summary.symbol,
+                            include_daily=True,
+                            days=days,
+                        )
+                positions.append(position_context)
             return {
                 "schema_version": 1,
                 "generated_at": generated_at,
@@ -184,7 +208,11 @@ class PositionService:
                 "symbol": symbol,
                 "position": None,
                 "transactions": [],
-                "market": self._market_ai_context(symbol),
+                "market": self._market_ai_context(
+                    symbol,
+                    include_daily=include_daily,
+                    days=days,
+                ),
                 "rule_results": [],
                 "data_warnings": [f"position not found: {symbol}"],
             }
@@ -219,6 +247,12 @@ class PositionService:
         )
         position_context["id"] = detail.position.id
         position_context["holding_days"] = self._holding_days(detail.position)
+        position_context["trade_plan"] = self._trade_plan_ai_context(detail.position)
+        position_context["rule_application_state"] = self._rule_application_state(
+            detail.position
+        )
+        technical_summary = self._technical_summary(detail.position, detail.summary)
+        position_context["technical_summary"] = technical_summary
 
         return {
             "schema_version": 1,
@@ -231,7 +265,12 @@ class PositionService:
                 if include_transactions
                 else []
             ),
-            "market": self._market_ai_context(symbol),
+            "market": self._market_ai_context(
+                symbol,
+                include_daily=include_daily,
+                days=days,
+            ),
+            "technical_summary": technical_summary,
             "rule_results": rule_results,
             "data_warnings": warnings,
         }
@@ -257,10 +296,18 @@ class PositionService:
             brick_value = brick.loc[idx]
             brick_base = brick_prev.loc[idx]
             brick_change = brick_delta.loc[idx]
-            
+
             open_val = row.get("open")
             close_val = row.get("close")
-            volume_color = "#F6465D" if (close_val is not None and open_val is not None and close_val >= open_val) else "#0ECB81"
+            volume_color = (
+                "#F6465D"
+                if (
+                    close_val is not None
+                    and open_val is not None
+                    and close_val >= open_val
+                )
+                else "#0ECB81"
+            )
 
             records.append(
                 {
@@ -271,16 +318,33 @@ class PositionService:
                     "low": _float_or_none(row.get("low")),
                     "volume": _float_or_none(row.get("volume")),
                     "volume_color": volume_color,
+                    "bbi": _float_or_none(bbi.loc[idx]),
                     "yellow_line": _float_or_none(bbi.loc[idx]),
                     "white_line": _float_or_none(white.loc[idx]),
-                    "single_pin_short": _float_or_none(single_pin["single_pin_short"].loc[idx]),
-                    "single_pin_mid": _float_or_none(single_pin["single_pin_mid"].loc[idx]),
-                    "single_pin_mid_long": _float_or_none(single_pin["single_pin_mid_long"].loc[idx]),
-                    "single_pin_long": _float_or_none(single_pin["single_pin_long"].loc[idx]),
+                    "single_pin_short": _float_or_none(
+                        single_pin["single_pin_short"].loc[idx]
+                    ),
+                    "single_pin_mid": _float_or_none(
+                        single_pin["single_pin_mid"].loc[idx]
+                    ),
+                    "single_pin_mid_long": _float_or_none(
+                        single_pin["single_pin_mid_long"].loc[idx]
+                    ),
+                    "single_pin_long": _float_or_none(
+                        single_pin["single_pin_long"].loc[idx]
+                    ),
                     "brick": _float_or_none(brick_value),
-                    "brick_base": _float_or_none(min(float(brick_base), float(brick_value)) if not pd.isna(brick_value) else None),
-                    "brick_delta": _float_or_none(abs(float(brick_change)) if not pd.isna(brick_change) else None),
-                    "brick_color": "#F6465D" if not pd.isna(brick_change) and float(brick_change) >= 0 else "#0ECB81",
+                    "brick_base": _float_or_none(
+                        min(float(brick_base), float(brick_value))
+                        if not pd.isna(brick_value)
+                        else None
+                    ),
+                    "brick_delta": _float_or_none(
+                        abs(float(brick_change)) if not pd.isna(brick_change) else None
+                    ),
+                    "brick_color": "#F6465D"
+                    if not pd.isna(brick_change) and float(brick_change) >= 0
+                    else "#0ECB81",
                 }
             )
 
@@ -437,6 +501,9 @@ class PositionService:
             "strategy_note_paths": (
                 position.strategy_note_paths if position is not None else []
             ),
+            "trade_plan": (
+                self._trade_plan_ai_context(position) if position is not None else {}
+            ),
             "quantity": summary.remaining_quantity,
             "avg_cost": summary.avg_cost,
             "latest_price": summary.latest_price,
@@ -493,7 +560,12 @@ class PositionService:
             "message": result.message,
         }
 
-    def _market_ai_context(self, symbol: str) -> dict[str, Any]:
+    def _market_ai_context(
+        self,
+        symbol: str,
+        include_daily: bool = False,
+        days: int = 130,
+    ) -> dict[str, Any]:
         price, source = self.cache.resolve_price(symbol, self.config.daily_data_dir)
         intraday_df = self.cache.get_intraday_df(symbol)
         daily_df = self._load_daily_df(symbol, days=1)
@@ -502,16 +574,140 @@ class PositionService:
         if daily_df is not None and not daily_df.empty:
             last_index = pd.to_datetime(daily_df.index[-1])
             daily_last_date = last_index.strftime("%Y-%m-%d")
-        return {
+        data: dict[str, Any] = {
             "symbol": symbol,
             "latest_price": price,
             "price_source": source,
             "daily_last_date": daily_last_date,
             "intraday_updated_at": intraday_meta.get("updated_at"),
             "intraday_rows": (
-                len(intraday_df) if intraday_df is not None else intraday_meta.get("rows")
+                len(intraday_df)
+                if intraday_df is not None
+                else intraday_meta.get("rows")
             ),
         }
+        if include_daily:
+            daily = self.get_daily_chart(symbol, days=days)
+            data["daily"] = daily
+            if daily.get("status") != "ok":
+                data["daily_indicators"] = {}
+            else:
+                try:
+                    data["daily_indicators"] = compute_indicators(
+                        self._load_daily_df(symbol, days=days)
+                    )
+                except Exception:
+                    data["daily_indicators"] = {}
+        return data
+
+    def _trade_plan_ai_context(self, position: Position) -> dict[str, Any]:
+        note_path = position.obsidian_note_path
+        if not note_path and position.strategy_note_paths:
+            note_path = position.strategy_note_paths[0]
+        return {
+            "buy_reason": position.buy_reason,
+            "expected_level": position.expected_level,
+            "initial_stop_loss": position.initial_stop_loss,
+            "target_price": position.target_price,
+            "allow_t": position.allow_t,
+            "max_holding_days": position.max_holding_days,
+            "obsidian_note_path": note_path,
+        }
+
+    def _rule_application_state(self, position: Position) -> dict[str, Any]:
+        available = self.registry.get_script_ids()
+        by_script_id = {item["script_id"]: item for item in available}
+        mounted_script_ids = {rule.script_id for rule in position.rules}
+        mounted = [
+            {
+                "rule_id": rule.id,
+                "script_id": rule.script_id,
+                "title": by_script_id.get(rule.script_id, {}).get("title", ""),
+                "category": rule.category,
+                "enabled": rule.enabled,
+                "registered": rule.script_id in by_script_id,
+                "params": rule.params,
+            }
+            for rule in position.rules
+        ]
+        return {
+            "mounted": mounted,
+            "available_unmounted": [
+                item
+                for item in available
+                if item["script_id"] not in mounted_script_ids
+            ],
+            "load_errors": self.registry.load_errors,
+        }
+
+    def _technical_summary(
+        self,
+        position: Position,
+        summary: PositionSummary,
+    ) -> dict[str, Any]:
+        df = self._load_daily_df(position.symbol, days=130)
+        if df is None or df.empty:
+            return {
+                "status": "missing_daily_data",
+                "above_yellow_line": None,
+                "above_bbi": None,
+                "consecutive_below_bbi_days": None,
+                "distance_to_yellow_pct": None,
+                "distance_to_stop_loss_pct": self._distance_to_stop_loss_pct(
+                    summary.latest_price, position
+                ),
+                "return_3d_pct": None,
+                "return_5d_pct": None,
+                "return_10d_pct": None,
+                "volume_status": "unknown",
+            }
+
+        close = df["close"].astype(float)
+        volume = (
+            df["volume"].astype(float) if "volume" in df else pd.Series(dtype=float)
+        )
+        bbi = compute_bbi(close)
+        latest_price = summary.latest_price
+        if latest_price is None and pd.notna(close.iloc[-1]):
+            latest_price = round(float(close.iloc[-1]), 4)
+        latest_bbi = bbi.iloc[-1] if not bbi.empty else None
+
+        consecutive_below = 0
+        for close_value, bbi_value in zip(
+            reversed(close.tolist()), reversed(bbi.tolist())
+        ):
+            if pd.isna(close_value) or pd.isna(bbi_value) or close_value >= bbi_value:
+                break
+            consecutive_below += 1
+
+        return {
+            "status": "ok",
+            "above_yellow_line": _compare_above(latest_price, latest_bbi),
+            "above_bbi": _compare_above(latest_price, latest_bbi),
+            "consecutive_below_bbi_days": consecutive_below,
+            "distance_to_yellow_pct": _distance_pct(latest_price, latest_bbi),
+            "distance_to_stop_loss_pct": self._distance_to_stop_loss_pct(
+                latest_price, position
+            ),
+            "return_3d_pct": _return_pct(close, 3),
+            "return_5d_pct": _return_pct(close, 5),
+            "return_10d_pct": _return_pct(close, 10),
+            "volume_status": _volume_status(volume),
+        }
+
+    def _distance_to_stop_loss_pct(
+        self,
+        latest_price: float | None,
+        position: Position,
+    ) -> float | None:
+        stop_loss = position.initial_stop_loss
+        for rule in position.rules:
+            if rule.script_id == "manual_take_profit_stop_loss":
+                value = rule.params.get("stop_loss_price")
+                if value is not None:
+                    stop_loss = value
+                    break
+        return _distance_pct(latest_price, stop_loss)
 
     def _latest_intraday_meta(self, symbol: str) -> dict[str, Any]:
         symbol_dir = Path(self.config.intraday_data_dir) / symbol
@@ -553,3 +749,44 @@ def _pct(numerator: float, denominator: float) -> float | None:
     if denominator == 0:
         return None
     return round(numerator / denominator * 100, 2)
+
+
+def _compare_above(price: float | None, line: Any) -> bool | None:
+    if price is None or pd.isna(line):
+        return None
+    return float(price) >= float(line)
+
+
+def _distance_pct(price: Any, reference: Any) -> float | None:
+    if price is None or reference is None or pd.isna(price) or pd.isna(reference):
+        return None
+    reference_float = float(reference)
+    if reference_float == 0:
+        return None
+    return round((float(price) - reference_float) / reference_float * 100, 2)
+
+
+def _return_pct(close: pd.Series, days: int) -> float | None:
+    if len(close) <= days:
+        return None
+    current = close.iloc[-1]
+    previous = close.iloc[-days - 1]
+    if pd.isna(current) or pd.isna(previous) or float(previous) == 0:
+        return None
+    return round((float(current) - float(previous)) / float(previous) * 100, 2)
+
+
+def _volume_status(volume: pd.Series) -> str:
+    if len(volume) < 21 or pd.isna(volume.iloc[-1]):
+        return "unknown"
+    avg = volume.iloc[-21:-1].mean()
+    if pd.isna(avg) or float(avg) <= 0:
+        return "unknown"
+    ratio = float(volume.iloc[-1]) / float(avg)
+    if ratio >= 2.0:
+        return "异常量"
+    if ratio >= 1.2:
+        return "放量"
+    if ratio <= 0.7:
+        return "缩量"
+    return "正常"
