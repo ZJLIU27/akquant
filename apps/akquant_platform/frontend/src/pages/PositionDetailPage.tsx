@@ -6,6 +6,7 @@ import IntradayChart from '../components/IntradayChart';
 import DailyChart from '../components/DailyChart';
 import TransactionList from '../components/TransactionList';
 import RulePanel from '../components/RulePanel';
+import StrategyBindingPanel from '../components/StrategyBindingPanel';
 
 const pageStyle: React.CSSProperties = {
   maxWidth: 1200,
@@ -138,12 +139,23 @@ export default function PositionDetailPage() {
         <TransactionList transactions={position.transactions} symbol={symbol!} onReload={load} />
       </div>
 
+      <div style={cardStyle}>
+        <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 16, color: colors.ink }}>策略绑定</h3>
+        <StrategyBindingPanel
+          symbol={symbol!}
+          strategyId={position.strategy_id}
+          strategyStage={position.strategy_stage}
+          strategyTags={position.strategy_tags}
+          onReload={load}
+        />
+      </div>
+
       {/* Rules */}
       <div style={cardStyle}>
-        <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 16, color: colors.ink }}>持仓规则</h3>
+        <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 16, color: colors.ink }}>有效持仓规则</h3>
         <RulePanel
           symbol={symbol!}
-          rules={position.rules}
+          rules={detail.effective_rules}
           ruleResults={rule_results}
           onReload={load}
         />

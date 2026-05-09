@@ -60,6 +60,7 @@ export interface PositionRule {
   category: 'risk' | 'alert';
   type: 'script';
   script_id: string;
+  strategy_id: string;
   enabled: boolean;
   params: Record<string, unknown>;
 }
@@ -77,6 +78,10 @@ export interface PositionDetail {
     id: string;
     symbol: string;
     name: string;
+    strategy_id: string;
+    strategy_stage: string;
+    strategy_tags: string[];
+    strategy_note_paths: string[];
     notes: string;
     rules: PositionRule[];
     transactions: Transaction[];
@@ -90,6 +95,7 @@ export interface PositionDetail {
     }>;
   };
   summary: PositionSummary;
+  effective_rules: PositionRule[];
   rule_results: RuleResult[];
 }
 
@@ -103,6 +109,24 @@ export interface AvailableRule {
     label: string;
     default?: unknown;
     options?: string[];
+  }>;
+}
+
+export interface AvailableStrategy {
+  strategy_id: string;
+  title: string;
+  tags: string[];
+  note_paths: string[];
+  stages: Array<{
+    stage_id: string;
+    title: string;
+    description: string;
+    rules: Array<{
+      category: 'risk' | 'alert';
+      script_id: string;
+      params: Record<string, unknown>;
+      enabled: boolean;
+    }>;
   }>;
 }
 
@@ -215,6 +239,15 @@ export const api = {
 
   listAvailableRules: () =>
     request<AvailableRule[]>('/rules/available'),
+
+  listAvailableStrategies: () =>
+    request<AvailableStrategy[]>('/strategies/available'),
+
+  bindStrategy: (symbol: string, binding: { strategy_id: string }) =>
+    request<PositionDetail['position']>(`/positions/${symbol}/strategy`, {
+      method: 'PATCH',
+      body: JSON.stringify(binding),
+    }),
 
   validatePositions: () =>
     request<{ valid: boolean; errors: string[] }>('/positions/validate', {

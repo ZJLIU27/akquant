@@ -74,6 +74,7 @@ export default function RulePanel({ symbol, rules, ruleResults, onReload }: Prop
 
       {rules.map(rule => {
         const result = ruleResults.find(r => r.rule_id === rule.id);
+        const fromStrategy = Boolean(rule.strategy_id);
         return (
           <div key={rule.id} style={{
             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -89,6 +90,7 @@ export default function RulePanel({ symbol, rules, ruleResults, onReload }: Prop
                 {rule.category === 'risk' ? '风控' : '提醒'}
               </span>
               <span style={{ fontWeight: 500, color: colors.ink }}>{rule.script_id}</span>
+              {fromStrategy && <span style={{ fontSize: 12, color: colors.slate }}>策略规则</span>}
               {!rule.enabled && <span style={{ fontSize: 12, color: colors.slate }}>(已禁用)</span>}
             </div>
             {result && (
@@ -100,12 +102,16 @@ export default function RulePanel({ symbol, rules, ruleResults, onReload }: Prop
                 <span style={{ fontSize: 13, color: colors.ink }}>{result.message}</span>
               </div>
             )}
-            <button
-              onClick={() => handleDelete(rule.id)}
-              style={{ background: 'none', border: 'none', color: colors.slate, cursor: 'pointer', fontSize: 12 }}
-            >
-              删除
-            </button>
+            {fromStrategy ? (
+              <span style={{ color: colors.slate, fontSize: 12 }}>随阶段绑定</span>
+            ) : (
+              <button
+                onClick={() => handleDelete(rule.id)}
+                style={{ background: 'none', border: 'none', color: colors.slate, cursor: 'pointer', fontSize: 12 }}
+              >
+                删除
+              </button>
+            )}
           </div>
         );
       })}

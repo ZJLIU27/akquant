@@ -110,11 +110,15 @@ class PositionService:
                 "indicators": indicators,
             }
 
-        rule_results = evaluate_rules(pos, summary, market, pos.rules, self.registry)
+        strategy_stage = self._resolve_strategy_stage(pos, summary, daily_df)
+        pos.strategy_stage = strategy_stage
+        effective_rules = self._effective_rules(pos, strategy_stage)
+        rule_results = evaluate_rules(pos, summary, market, effective_rules, self.registry)
 
         return PositionDetail(
             position=pos,
             summary=summary,
+            effective_rules=effective_rules,
             rule_results=rule_results,
         )
 
@@ -450,6 +454,38 @@ class PositionService:
     def get_available_rules(self) -> list[dict[str, Any]]:
         return self.registry.get_script_ids()
 
+    def bind_strategy(
+        self,
+        symbol: str,
+        strategy_id: str,
+    ) -> Position | None:
+        """Bind a position to a registered large strategy.
+
+        The current holding stage is derived when reading position detail.
+        """
+        if strategy_id and not self.registry.validate_strategy_id(strategy_id):
+            return None
+
+        tags: list[str] | None = None
+        note_paths: list[str] | None = None
+        if strategy_id:
+            strategy = self.registry.get_strategy_entry(strategy_id)
+            if strategy is None:
+                return None
+            tags = strategy.tags
+            note_paths = strategy.note_paths
+
+        return self.repo.update_strategy_binding(
+            symbol,
+            strategy_id,
+            "",
+            strategy_tags=tags,
+            strategy_note_paths=note_paths,
+        )
+
+    def get_available_strategies(self) -> list[dict[str, Any]]:
+        return self.registry.get_strategy_ids()
+
     # --- Validation ---
 
     def validate(self) -> list[str]:
@@ -497,6 +533,7 @@ class PositionService:
             "name": summary.name,
             "status": summary.status,
             "strategy_id": position.strategy_id if position is not None else "",
+            "strategy_stage": position.strategy_stage if position is not None else "",
             "strategy_tags": position.strategy_tags if position is not None else [],
             "strategy_note_paths": (
                 position.strategy_note_paths if position is not None else []
@@ -617,7 +654,18 @@ class PositionService:
     def _rule_application_state(self, position: Position) -> dict[str, Any]:
         available = self.registry.get_script_ids()
         by_script_id = {item["script_id"]: item for item in available}
-        mounted_script_ids = {rule.script_id for rule in position.rules}
+        price, source = self.cache.resolve_price(
+            position.symbol,
+            self.config.daily_data_dir,
+        )
+        summary = calculate_position(position, price, source)
+        strategy_stage = self._resolve_strategy_stage(
+            position,
+            summary,
+            self._load_daily_df(position.symbol),
+        )
+        effective_rules = self._effective_rules(position, strategy_stage)
+        mounted_script_ids = {rule.script_id for rule in effective_rules}
         mounted = [
             {
                 "rule_id": rule.id,
@@ -627,10 +675,13 @@ class PositionService:
                 "enabled": rule.enabled,
                 "registered": rule.script_id in by_script_id,
                 "params": rule.params,
+                "source": "strategy" if rule.strategy_id else "manual",
             }
-            for rule in position.rules
+            for rule in effective_rules
         ]
         return {
+            "strategy_id": position.strategy_id,
+            "strategy_stage": strategy_stage,
             "mounted": mounted,
             "available_unmounted": [
                 item
@@ -639,6 +690,125 @@ class PositionService:
             ],
             "load_errors": self.registry.load_errors,
         }
+
+    def _effective_rules(
+        self,
+        position: Position,
+        strategy_stage: str | None = None,
+    ) -> list[PositionRule]:
+        """Return rules from the bound strategy stage plus manual position rules."""
+        rules: list[PositionRule] = []
+        stage_id = strategy_stage if strategy_stage is not None else position.strategy_stage
+        if position.strategy_id and stage_id:
+            strategy = self.registry.get_strategy_entry(position.strategy_id)
+            stage = (
+                strategy.stages.get(stage_id)
+                if strategy is not None
+                else None
+            )
+            if stage is not None:
+                for mounted in stage.rules:
+                    rules.append(
+                        PositionRule(
+                            id=(
+                                f"strategy:{position.strategy_id}:"
+                                f"{stage_id}:{mounted.script_id}"
+                            ),
+                            category=mounted.category,
+                            script_id=mounted.script_id,
+                            strategy_id=position.strategy_id,
+                            enabled=mounted.enabled,
+                            params=mounted.params,
+                        )
+                    )
+        rules.extend(position.rules)
+        return rules
+
+    def _resolve_strategy_stage(
+        self,
+        position: Position,
+        summary: PositionSummary,
+        daily_df: pd.DataFrame | None = None,
+    ) -> str:
+        """Derive the current holding stage for a bound strategy."""
+        if not position.strategy_id or summary.status != "open":
+            return ""
+
+        strategy = self.registry.get_strategy_entry(position.strategy_id)
+        if strategy is None or not strategy.stages:
+            return ""
+
+        preferred = [
+            "buy_1_3_days",
+            "normal_hold",
+            "profit_advance",
+            "pullback_watch",
+            "breakdown_invalid",
+        ]
+
+        def pick(stage_id: str) -> str:
+            if stage_id in strategy.stages:
+                return stage_id
+            for fallback in preferred:
+                if fallback in strategy.stages:
+                    return fallback
+            return next(iter(strategy.stages))
+
+        latest_price = summary.latest_price
+        pnl_pct = _pct(summary.unrealized_pnl, summary.cost_amount)
+        holding_days = self._holding_days(position)
+        stop_loss = self._strategy_stop_loss(position)
+
+        close: pd.Series | None = None
+        bbi: pd.Series | None = None
+        volume: pd.Series | None = None
+        if daily_df is not None and not daily_df.empty and "close" in daily_df:
+            close = daily_df["close"].astype(float)
+            bbi = compute_bbi(close)
+            if "volume" in daily_df:
+                volume = daily_df["volume"].astype(float)
+            if latest_price is None and not close.empty and pd.notna(close.iloc[-1]):
+                latest_price = float(close.iloc[-1])
+
+        latest_bbi = _series_last(bbi)
+        below_bbi = (
+            latest_price is not None
+            and latest_bbi is not None
+            and latest_price < latest_bbi
+        )
+        consecutive_below_bbi = _consecutive_below(close, bbi)
+        strong_profit = (
+            pnl_pct is not None
+            and pnl_pct >= 6.0
+        ) or _has_two_recent_strong_up_days(daily_df)
+        abnormal_volume_drop = _has_recent_bearish_volume(daily_df, volume)
+        weak_pullback = _has_recent_pullback(close) or (
+            pnl_pct is not None
+            and pnl_pct < 0
+            and holding_days is not None
+            and holding_days > 3
+        )
+
+        if stop_loss is not None and latest_price is not None and latest_price <= stop_loss:
+            return pick("breakdown_invalid")
+        if consecutive_below_bbi >= 2 or (below_bbi and abnormal_volume_drop):
+            return pick("breakdown_invalid")
+        if strong_profit:
+            return pick("profit_advance")
+        if holding_days is not None and holding_days <= 3:
+            return pick("buy_1_3_days")
+        if below_bbi or weak_pullback:
+            return pick("pullback_watch")
+        return pick("normal_hold")
+
+    def _strategy_stop_loss(self, position: Position) -> float | None:
+        stop_loss = position.initial_stop_loss
+        for rule in position.rules:
+            if rule.script_id == "manual_take_profit_stop_loss":
+                value = rule.params.get("stop_loss_price")
+                if value is not None:
+                    return float(value)
+        return stop_loss
 
     def _technical_summary(
         self,
@@ -774,6 +944,83 @@ def _return_pct(close: pd.Series, days: int) -> float | None:
     if pd.isna(current) or pd.isna(previous) or float(previous) == 0:
         return None
     return round((float(current) - float(previous)) / float(previous) * 100, 2)
+
+
+def _series_last(series: pd.Series | None) -> float | None:
+    if series is None or series.empty:
+        return None
+    value = series.iloc[-1]
+    if pd.isna(value):
+        return None
+    return float(value)
+
+
+def _consecutive_below(
+    values: pd.Series | None,
+    reference: pd.Series | None,
+) -> int:
+    if values is None or reference is None or values.empty or reference.empty:
+        return 0
+
+    count = 0
+    for value, line in zip(reversed(values.tolist()), reversed(reference.tolist())):
+        if pd.isna(value) or pd.isna(line) or float(value) >= float(line):
+            break
+        count += 1
+    return count
+
+
+def _has_two_recent_strong_up_days(df: pd.DataFrame | None) -> bool:
+    if df is None or len(df) < 2 or "open" not in df or "close" not in df:
+        return False
+    recent = df.tail(2)
+    for _, row in recent.iterrows():
+        open_value = row.get("open")
+        close_value = row.get("close")
+        if (
+            open_value is None
+            or close_value is None
+            or pd.isna(open_value)
+            or pd.isna(close_value)
+            or float(open_value) <= 0
+        ):
+            return False
+        gain_pct = (float(close_value) - float(open_value)) / float(open_value) * 100
+        if gain_pct < 3.25:
+            return False
+    return True
+
+
+def _has_recent_bearish_volume(
+    df: pd.DataFrame | None,
+    volume: pd.Series | None,
+) -> bool:
+    if (
+        df is None
+        or volume is None
+        or len(df) < 21
+        or "open" not in df
+        or "close" not in df
+    ):
+        return False
+    latest = df.iloc[-1]
+    latest_volume = volume.iloc[-1]
+    avg_volume = volume.iloc[-21:-1].mean()
+    if pd.isna(latest_volume) or pd.isna(avg_volume) or float(avg_volume) <= 0:
+        return False
+    is_bearish = float(latest["close"]) < float(latest["open"])
+    return is_bearish and float(latest_volume) / float(avg_volume) >= 1.5
+
+
+def _has_recent_pullback(close: pd.Series | None) -> bool:
+    if close is None or len(close) < 3:
+        return False
+    latest = close.iloc[-1]
+    previous = close.iloc[-2]
+    three_days_ago = close.iloc[-3]
+    if pd.isna(latest) or pd.isna(previous) or pd.isna(three_days_ago):
+        return False
+    return float(latest) < float(previous) < float(three_days_ago)
 
 
 def _volume_status(volume: pd.Series) -> str:

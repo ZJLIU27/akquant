@@ -58,6 +58,7 @@ class Position(BaseModel):
     symbol: str
     name: str = ""
     strategy_id: str = ""
+    strategy_stage: str = ""
     strategy_tags: list[str] = Field(default_factory=list)
     strategy_note_paths: list[str] = Field(default_factory=list)
     buy_reason: str = ""
@@ -134,6 +135,7 @@ class PositionDetail(BaseModel):
 
     position: Position
     summary: PositionSummary
+    effective_rules: list[PositionRule] = Field(default_factory=list)
     rule_results: list[RuleResult] = Field(default_factory=list)
 
 

@@ -148,9 +148,28 @@ def delete_rule(symbol: str, rule_id: str) -> dict[str, bool]:
     return {"ok": True}
 
 
+@router.patch("/positions/{symbol}/strategy")
+def bind_strategy(symbol: str, payload: dict[str, Any]) -> dict[str, Any]:
+    position = get_service().bind_strategy(
+        symbol=symbol,
+        strategy_id=payload.get("strategy_id", ""),
+    )
+    if position is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid strategy, stage, or position not found",
+        )
+    return position.model_dump(mode="json")
+
+
 @router.get("/rules/available")
 def list_available_rules() -> list[dict[str, Any]]:
     return get_service().get_available_rules()
+
+
+@router.get("/strategies/available")
+def list_available_strategies() -> list[dict[str, Any]]:
+    return get_service().get_available_strategies()
 
 
 @router.post("/positions/validate")

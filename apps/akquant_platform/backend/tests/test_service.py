@@ -78,6 +78,125 @@ def test_get_position_detail(service: PositionService):
     assert detail.summary.status == "open"
 
 
+def test_bind_strategy_adds_stage_rules(tmp_path: Path):
+    positions_file = tmp_path / "positions.yaml"
+    daily_dir = tmp_path / "daily"
+    intraday_dir = tmp_path / "intraday"
+    workspace_dir = tmp_path / "workspace"
+    registry_file = workspace_dir / "registry.yaml"
+
+    daily_dir.mkdir()
+    intraday_dir.mkdir()
+    workspace_dir.mkdir()
+    registry_file.write_text(
+        """
+strategy_registry:
+  shaofu:
+    title: "少妇战法"
+    tags: ["少妇战法"]
+    note_paths: ["strategies/shaofu.md"]
+    stages:
+      trend_hold:
+        title: "趋势持有"
+        rules:
+          - category: risk
+            script_id: bbi_break_stop_loss
+            params: {}
+position_rule_registry:
+  bbi_break_stop_loss:
+    title: "BBI破止损"
+    module: "position_rules.bbi_break_stop_loss"
+    function: "evaluate"
+    params_schema: []
+""",
+        encoding="utf-8",
+    )
+
+    config = PlatformConfig(
+        positions_file=str(positions_file),
+        daily_data_dir=str(daily_dir),
+        intraday_data_dir=str(intraday_dir),
+        workspace_dir=str(workspace_dir),
+        registry_file=str(registry_file),
+    )
+    svc = PositionService(config)
+    svc.init()
+    svc.add_buy("000001", "2026-05-08", 1000, 10.0)
+
+    position = svc.bind_strategy("000001", "shaofu")
+    assert position is not None
+    assert position.strategy_id == "shaofu"
+    assert position.strategy_stage == ""
+    assert position.strategy_tags == ["少妇战法"]
+
+    detail = svc.get_position_detail("000001")
+    assert detail is not None
+    assert detail.position.strategy_stage == "trend_hold"
+    assert [rule.script_id for rule in detail.effective_rules] == ["bbi_break_stop_loss"]
+    assert detail.effective_rules[0].strategy_id == "shaofu"
+
+
+def test_bind_strategy_rejects_unknown_strategy(service: PositionService):
+    service.add_buy("000001", "2026-05-08", 1000, 10.0)
+    assert service.bind_strategy("000001", "missing") is None
+
+
+def test_available_strategies_include_four_large_strategies(tmp_path: Path):
+    positions_file = tmp_path / "positions.yaml"
+    daily_dir = tmp_path / "daily"
+    intraday_dir = tmp_path / "intraday"
+    workspace_dir = tmp_path / "workspace"
+    registry_file = workspace_dir / "registry.yaml"
+
+    daily_dir.mkdir()
+    intraday_dir.mkdir()
+    workspace_dir.mkdir()
+    registry_file.write_text(
+        """
+strategy_registry:
+  shaofu:
+    title: "B1（少妇战法）"
+    stages:
+      normal_hold:
+        title: "趋势持有"
+        rules: []
+  b2:
+    title: "B2"
+    stages:
+      normal_hold:
+        title: "趋势确认持有"
+        rules: []
+  single_pin_20_30:
+    title: "单针下20/30"
+    stages:
+      normal_hold:
+        title: "短线持有期"
+        rules: []
+  brick_chart:
+    title: "砖形图"
+    stages:
+      normal_hold:
+        title: "砖形趋势持有"
+        rules: []
+position_rule_registry: {}
+""",
+        encoding="utf-8",
+    )
+
+    config = PlatformConfig(
+        positions_file=str(positions_file),
+        daily_data_dir=str(daily_dir),
+        intraday_data_dir=str(intraday_dir),
+        workspace_dir=str(workspace_dir),
+        registry_file=str(registry_file),
+    )
+    svc = PositionService(config)
+    svc.init()
+
+    strategy_ids = {item["strategy_id"] for item in svc.get_available_strategies()}
+    assert {"shaofu", "b2", "single_pin_20_30", "brick_chart"} <= strategy_ids
+
+
 def test_get_daily_chart(service: PositionService, tmp_path: Path):
     import pandas as pd
 

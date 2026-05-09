@@ -267,6 +267,34 @@ class PositionRepository:
         self.save(pf)
         return len(pos.rules) < before
 
+    def update_strategy_binding(
+        self,
+        symbol: str,
+        strategy_id: str,
+        strategy_stage: str = "",
+        strategy_tags: list[str] | None = None,
+        strategy_note_paths: list[str] | None = None,
+    ) -> Position | None:
+        """Bind a position to a large strategy and one of its stages."""
+        pf = self.load()
+        pos = None
+        for p in pf.positions:
+            if p.symbol == symbol:
+                pos = p
+                break
+        if pos is None:
+            return None
+
+        pos.strategy_id = strategy_id
+        pos.strategy_stage = strategy_stage
+        if strategy_tags is not None:
+            pos.strategy_tags = strategy_tags
+        if strategy_note_paths is not None:
+            pos.strategy_note_paths = strategy_note_paths
+
+        self.save(pf)
+        return pos
+
     def validate(self) -> list[str]:
         """Validate positions file. Returns list of error messages."""
         errors: list[str] = []

@@ -5,10 +5,10 @@ from __future__ import annotations
 import importlib
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .models import Position, PositionSummary, RuleResult
 
@@ -19,8 +19,34 @@ class RegistryEntry(BaseModel):
     title: str = ""
     module: str = ""
     function: str = "evaluate"
-    params_schema: list[dict[str, Any]] = []
+    params_schema: list[dict[str, Any]] = Field(default_factory=list)
     _loaded_fn: Any = None
+
+
+class StrategyRuleMount(BaseModel):
+    """A rule mounted by a strategy stage."""
+
+    category: Literal["risk", "alert"] = "risk"
+    script_id: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    enabled: bool = True
+
+
+class StrategyStageEntry(BaseModel):
+    """A named stage inside a position strategy."""
+
+    title: str = ""
+    description: str = ""
+    rules: list[StrategyRuleMount] = Field(default_factory=list)
+
+
+class StrategyEntry(BaseModel):
+    """A large position strategy made of staged rule sets."""
+
+    title: str = ""
+    tags: list[str] = Field(default_factory=list)
+    note_paths: list[str] = Field(default_factory=list)
+    stages: dict[str, StrategyStageEntry] = Field(default_factory=dict)
 
 
 class RuleRegistry:
@@ -30,12 +56,14 @@ class RuleRegistry:
         self._registry_file = Path(registry_file)
         self._workspace_dir = Path(workspace_dir)
         self._entries: dict[str, RegistryEntry] = {}
+        self._strategies: dict[str, StrategyEntry] = {}
         self._load_errors: dict[str, str] = {}
         self._loaded = False
 
     def load(self) -> None:
         """Load registry from YAML."""
         self._entries.clear()
+        self._strategies.clear()
         self._load_errors.clear()
         self._loaded = True
 
@@ -52,6 +80,13 @@ class RuleRegistry:
             except Exception as e:
                 self._load_errors[key] = str(e)
 
+        strategy_registry = data.get("strategy_registry", {})
+        for key, val in strategy_registry.items():
+            try:
+                self._strategies[key] = StrategyEntry(**val)
+            except Exception as e:
+                self._load_errors[f"strategy:{key}"] = str(e)
+
     @property
     def entries(self) -> dict[str, RegistryEntry]:
         if not self._loaded:
@@ -63,6 +98,12 @@ class RuleRegistry:
         if not self._loaded:
             self.load()
         return self._load_errors
+
+    @property
+    def strategies(self) -> dict[str, StrategyEntry]:
+        if not self._loaded:
+            self.load()
+        return self._strategies
 
     def validate_script_id(self, script_id: str) -> bool:
         """Check if a script_id is registered."""
@@ -78,6 +119,43 @@ class RuleRegistry:
                 "params_schema": entry.params_schema,
             })
         return result
+
+    def validate_strategy_id(self, strategy_id: str) -> bool:
+        """Check if a strategy_id is registered."""
+        return strategy_id in self.strategies
+
+    def get_strategy_ids(self) -> list[dict[str, Any]]:
+        """Return registered large strategies with stages for binding UI."""
+        result = []
+        for key, entry in self.strategies.items():
+            result.append({
+                "strategy_id": key,
+                "title": entry.title,
+                "tags": entry.tags,
+                "note_paths": entry.note_paths,
+                "stages": [
+                    {
+                        "stage_id": stage_id,
+                        "title": stage.title,
+                        "description": stage.description,
+                        "rules": [
+                            {
+                                "category": rule.category,
+                                "script_id": rule.script_id,
+                                "params": rule.params,
+                                "enabled": rule.enabled,
+                            }
+                            for rule in stage.rules
+                        ],
+                    }
+                    for stage_id, stage in entry.stages.items()
+                ],
+            })
+        return result
+
+    def get_strategy_entry(self, strategy_id: str) -> StrategyEntry | None:
+        """Return a registered strategy entry."""
+        return self.strategies.get(strategy_id)
 
     def _resolve_function(self, script_id: str) -> Any:
         """Dynamically import and resolve the rule function."""
