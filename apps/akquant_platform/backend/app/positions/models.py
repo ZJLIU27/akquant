@@ -35,6 +35,7 @@ class PositionRule(BaseModel):
     category: Literal["risk", "alert"]
     type: Literal["script"] = "script"
     script_id: str
+    strategy_id: str = ""
     enabled: bool = True
     params: dict[str, Any] = Field(default_factory=dict)
 
@@ -56,6 +57,9 @@ class Position(BaseModel):
     id: str
     symbol: str
     name: str = ""
+    strategy_id: str = ""
+    strategy_tags: list[str] = Field(default_factory=list)
+    strategy_note_paths: list[str] = Field(default_factory=list)
     notes: str = ""
     rules: list[PositionRule] = Field(default_factory=list)
     transactions: list[Transaction] = Field(default_factory=list)

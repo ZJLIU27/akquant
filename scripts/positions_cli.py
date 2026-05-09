@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -88,6 +89,19 @@ def cmd_validate(service: PositionService) -> None:
         sys.exit(1)
 
 
+def cmd_ai_context(service: PositionService, args: argparse.Namespace) -> None:
+    context = service.export_ai_context(
+        symbol=args.symbol,
+        all_open=args.all_open,
+        include_transactions=not args.no_transactions,
+        include_rule_results=not args.no_rule_results,
+    )
+    if args.format == "json":
+        print(json.dumps(context, ensure_ascii=False, indent=2, sort_keys=False))
+    else:
+        raise ValueError(f"Unsupported format: {args.format}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="AKQuant 持仓管理 CLI",
@@ -124,9 +138,26 @@ def main() -> None:
     # validate
     subparsers.add_parser("validate", help="Validate positions file")
 
+    # ai-context
+    ai_parser = subparsers.add_parser(
+        "ai-context",
+        help="Export read-only position context for external agents",
+    )
+    ai_target = ai_parser.add_mutually_exclusive_group(required=True)
+    ai_target.add_argument("--symbol", help="Export one symbol")
+    ai_target.add_argument("--all-open", action="store_true", help="Export all open positions")
+    ai_parser.add_argument("--format", choices=["json"], default="json")
+    ai_parser.add_argument("--no-transactions", action="store_true")
+    ai_parser.add_argument("--no-rule-results", action="store_true")
+
     args = parser.parse_args()
     config = load_config(args.config)
     service = PositionService(config)
+
+    if args.command == "ai-context":
+        cmd_ai_context(service, args)
+        return
+
     service.init()
 
     if args.command == "init":
