@@ -7,12 +7,14 @@ interface Props {
   onClose: () => void;
   onSaved: () => void;
   initialSymbol?: string;
+  initialName?: string;
   initialSide?: 'buy' | 'sell';
+  positionId?: string;
 }
 
-export default function TransactionForm({ onClose, onSaved, initialSymbol, initialSide }: Props) {
+export default function TransactionForm({ onClose, onSaved, initialSymbol, initialName, initialSide, positionId }: Props) {
   const [symbol, setSymbol] = useState(initialSymbol || '');
-  const [name, setName] = useState('');
+  const [name, setName] = useState(initialName || '');
   const [side, setSide] = useState<'buy' | 'sell'>(initialSide || 'buy');
   const [stockResolved, setStockResolved] = useState(!!initialSymbol);
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
@@ -25,25 +27,26 @@ export default function TransactionForm({ onClose, onSaved, initialSymbol, initi
 
   useEffect(() => {
     if (initialSymbol) setSymbol(initialSymbol);
+    if (initialName) setName(initialName);
     if (initialSide) setSide(initialSide);
-  }, [initialSymbol, initialSide]);
+  }, [initialSymbol, initialName, initialSide]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (side === 'buy' && !initialSymbol && !stockResolved) {
+    if (!positionId && side === 'buy' && !initialSymbol && !stockResolved) {
       setStockError('请从下拉列表中选择股票');
       return;
     }
     setStockError('');
     setSaving(true);
     try {
-      await api.addTransaction(symbol, {
+      await api.addTransaction(positionId || symbol, {
         side,
         trade_date: date,
         quantity: parseInt(quantity),
         price: parseFloat(price),
         fee: parseFloat(fee) || 0,
-        name: side === 'buy' ? name : undefined,
+        name: !positionId && side === 'buy' ? name : undefined,
         notes,
       });
       onSaved();
@@ -65,7 +68,7 @@ export default function TransactionForm({ onClose, onSaved, initialSymbol, initi
         width: 480, boxShadow: shadow.medium,
       }}>
         <h3 style={{ fontSize: 18, fontWeight: 700, marginBottom: 24, color: colors.ink }}>
-          新增交易
+          {positionId ? '新增操作' : '新增交易'}
         </h3>
         <form onSubmit={handleSubmit}>
           <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>

@@ -37,7 +37,7 @@ export default function App() {
       <main style={{ flex: 1, background: colors.snow }}>
         <Routes>
           <Route path="/" element={<PositionListPage />} />
-          <Route path="/positions/:symbol" element={<PositionDetailPage />} />
+          <Route path="/positions/:positionId" element={<PositionDetailPage />} />
         </Routes>
       </main>
     </BrowserRouter>

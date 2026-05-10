@@ -17,8 +17,17 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 // --- Types ---
 
 export interface PositionSummary {
+  id: string;
   symbol: string;
   name: string;
+  strategy_id: string;
+  strategy_title: string;
+  strategy_stage: string;
+  strategy_tags: string[];
+  rule_count: number;
+  risk_rule_count: number;
+  alert_rule_count: number;
+  rule_titles: string[];
   status: 'open' | 'closed' | 'invalid';
   remaining_quantity: number;
   avg_cost: number;
@@ -68,7 +77,7 @@ export interface PositionRule {
 export interface RuleResult {
   rule_id: string;
   script_id: string;
-  status: 'normal' | 'triggered' | 'unknown' | 'error';
+  status: 'normal' | 'triggered' | 'completed' | 'unknown' | 'error';
   level: 'info' | 'warning' | 'danger';
   message: string;
 }
@@ -151,6 +160,12 @@ export interface DailyRecord {
   single_pin_mid: number | null;
   single_pin_mid_long: number | null;
   single_pin_long: number | null;
+  kdj_k: number | null;
+  kdj_d: number | null;
+  kdj_j: number | null;
+  macd_dif: number | null;
+  macd_dea: number | null;
+  macd: number | null;
   brick: number | null;
   brick_base: number | null;
   brick_delta: number | null;
@@ -199,41 +214,41 @@ export const api = {
 
   listPositions: () => request<PositionListResponse>('/positions'),
 
-  getPosition: (symbol: string) =>
-    request<PositionDetail>(`/positions/${symbol}`),
+  getPosition: (positionId: string) =>
+    request<PositionDetail>(`/positions/${positionId}`),
 
-  getIntraday: (symbol: string) =>
-    request<IntradayResponse>(`/positions/${symbol}/intraday`),
+  getIntraday: (positionId: string) =>
+    request<IntradayResponse>(`/positions/${positionId}/intraday`),
 
-  getDaily: (symbol: string) =>
-    request<DailyResponse>(`/positions/${symbol}/daily`),
+  getDaily: (positionId: string) =>
+    request<DailyResponse>(`/positions/${positionId}/daily`),
 
-  addTransaction: (symbol: string, txn: Record<string, unknown>) =>
-    request<Transaction>(`/positions/${symbol}/transactions`, {
+  addTransaction: (positionRef: string, txn: Record<string, unknown>) =>
+    request<Transaction>(`/positions/${positionRef}/transactions`, {
       method: 'POST',
       body: JSON.stringify(txn),
     }),
 
-  editTransaction: (symbol: string, txnId: string, updates: TransactionUpdatePayload) =>
-    request<Transaction>(`/positions/${symbol}/transactions/${txnId}`, {
+  editTransaction: (positionId: string, txnId: string, updates: TransactionUpdatePayload) =>
+    request<Transaction>(`/positions/${positionId}/transactions/${txnId}`, {
       method: 'PATCH',
       body: JSON.stringify(updates),
     }),
 
-  voidTransaction: (symbol: string, txnId: string, reason?: string) =>
-    request<Transaction>(`/positions/${symbol}/transactions/${txnId}/void`, {
+  voidTransaction: (positionId: string, txnId: string, reason?: string) =>
+    request<Transaction>(`/positions/${positionId}/transactions/${txnId}/void`, {
       method: 'POST',
       body: JSON.stringify({ reason: reason || '' }),
     }),
 
-  addRule: (symbol: string, rule: { category: string; script_id: string; params?: Record<string, unknown> }) =>
-    request<PositionRule>(`/positions/${symbol}/rules`, {
+  addRule: (positionId: string, rule: { category: string; script_id: string; params?: Record<string, unknown> }) =>
+    request<PositionRule>(`/positions/${positionId}/rules`, {
       method: 'POST',
       body: JSON.stringify(rule),
     }),
 
-  deleteRule: (symbol: string, ruleId: string) =>
-    request<{ ok: boolean }>(`/positions/${symbol}/rules/${ruleId}`, {
+  deleteRule: (positionId: string, ruleId: string) =>
+    request<{ ok: boolean }>(`/positions/${positionId}/rules/${ruleId}`, {
       method: 'DELETE',
     }),
 
@@ -243,8 +258,8 @@ export const api = {
   listAvailableStrategies: () =>
     request<AvailableStrategy[]>('/strategies/available'),
 
-  bindStrategy: (symbol: string, binding: { strategy_id: string }) =>
-    request<PositionDetail['position']>(`/positions/${symbol}/strategy`, {
+  bindStrategy: (positionId: string, binding: { strategy_id: string }) =>
+    request<PositionDetail['position']>(`/positions/${positionId}/strategy`, {
       method: 'PATCH',
       body: JSON.stringify(binding),
     }),

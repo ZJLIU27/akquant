@@ -5,6 +5,7 @@ import { colors, radius, shadow } from '../theme/variables';
 import IntradayChart from '../components/IntradayChart';
 import DailyChart from '../components/DailyChart';
 import TransactionList from '../components/TransactionList';
+import TransactionForm from '../components/TransactionForm';
 import RulePanel from '../components/RulePanel';
 import StrategyBindingPanel from '../components/StrategyBindingPanel';
 
@@ -51,20 +52,22 @@ function pnlColor(val: number): string {
 }
 
 export default function PositionDetailPage() {
-  const { symbol } = useParams<{ symbol: string }>();
+  const { positionId } = useParams<{ positionId: string }>();
   const navigate = useNavigate();
   const [detail, setDetail] = useState<PositionDetail | null>(null);
   const [intraday, setIntraday] = useState<IntradayResponse | null>(null);
   const [daily, setDaily] = useState<DailyResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [showIntraday, setShowIntraday] = useState(false);
+  const [showForm, setShowForm] = useState(false);
 
   const load = useCallback(async () => {
-    if (!symbol) return;
+    if (!positionId) return;
     try {
       const [d, i, day] = await Promise.all([
-        api.getPosition(symbol),
-        api.getIntraday(symbol),
-        api.getDaily(symbol),
+        api.getPosition(positionId),
+        api.getIntraday(positionId),
+        api.getDaily(positionId),
       ]);
       setDetail(d);
       setIntraday(i);
@@ -74,7 +77,7 @@ export default function PositionDetailPage() {
     } finally {
       setLoading(false);
     }
-  }, [symbol]);
+  }, [positionId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -97,7 +100,7 @@ export default function PositionDetailPage() {
               {summary.symbol} {summary.name}
             </h2>
             <span style={{ fontSize: 12, color: colors.slate }}>
-              价格来源: {summary.price_source === 'intraday' ? '分时' : summary.price_source === 'daily_fallback' ? '日线回退' : '缺失'}
+              Position ID: {position.id} · 价格来源: {summary.price_source === 'intraday' ? '分时' : summary.price_source === 'daily_fallback' ? '日线回退' : '缺失'}
             </span>
           </div>
           <span style={{
@@ -122,27 +125,78 @@ export default function PositionDetailPage() {
         </div>
       </div>
 
+      {/* Rules */}
+      <div style={cardStyle}>
+        <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 16, color: colors.ink }}>有效持仓规则</h3>
+        <RulePanel
+          symbol={position.id}
+          rules={detail.effective_rules}
+          ruleResults={rule_results}
+          onReload={load}
+        />
+      </div>
+
       {/* Intraday Chart */}
       <div style={cardStyle}>
-        <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 16, color: colors.ink }}>当日分时</h3>
-        <IntradayChart data={intraday} avgCost={summary.avg_cost} />
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
+          <h3 style={{ fontSize: 16, fontWeight: 600, color: colors.ink }}>当日分时</h3>
+          <button
+            type="button"
+            onClick={() => setShowIntraday(prev => !prev)}
+            style={{
+              border: `1px solid ${colors.borderLight}`,
+              borderRadius: radius.sm,
+              background: colors.white,
+              color: colors.ink,
+              cursor: 'pointer',
+              fontSize: 13,
+              fontWeight: 600,
+              padding: '6px 12px',
+            }}
+          >
+            {showIntraday ? '收起' : '展开'}
+          </button>
+        </div>
+        {showIntraday && (
+          <div style={{ marginTop: 16 }}>
+            <IntradayChart data={intraday} avgCost={summary.avg_cost} />
+          </div>
+        )}
       </div>
 
       <div style={cardStyle}>
         <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 16, color: colors.ink }}>日线与指标</h3>
-        <DailyChart data={daily} avgCost={summary.avg_cost} />
+        <DailyChart symbol={position.symbol} data={daily} avgCost={summary.avg_cost} transactions={position.transactions} />
       </div>
 
       {/* Transactions */}
       <div style={cardStyle}>
-        <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 16, color: colors.ink }}>交易流水</h3>
-        <TransactionList transactions={position.transactions} symbol={symbol!} onReload={load} />
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <h3 style={{ fontSize: 16, fontWeight: 600, color: colors.ink }}>交易流水</h3>
+          <button
+            type="button"
+            onClick={() => setShowForm(true)}
+            style={{
+              border: 'none',
+              borderRadius: radius.sm,
+              background: colors.yellow,
+              color: colors.ink,
+              cursor: 'pointer',
+              fontSize: 13,
+              fontWeight: 600,
+              padding: '6px 12px',
+            }}
+          >
+            新增操作
+          </button>
+        </div>
+        <TransactionList transactions={position.transactions} symbol={position.id} onReload={load} />
       </div>
 
       <div style={cardStyle}>
         <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 16, color: colors.ink }}>策略绑定</h3>
         <StrategyBindingPanel
-          symbol={symbol!}
+          symbol={position.id}
           strategyId={position.strategy_id}
           strategyStage={position.strategy_stage}
           strategyTags={position.strategy_tags}
@@ -150,16 +204,15 @@ export default function PositionDetailPage() {
         />
       </div>
 
-      {/* Rules */}
-      <div style={cardStyle}>
-        <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 16, color: colors.ink }}>有效持仓规则</h3>
-        <RulePanel
-          symbol={symbol!}
-          rules={detail.effective_rules}
-          ruleResults={rule_results}
-          onReload={load}
+      {showForm && (
+        <TransactionForm
+          onClose={() => setShowForm(false)}
+          onSaved={load}
+          initialSymbol={position.symbol}
+          initialName={position.name}
+          positionId={position.id}
         />
-      </div>
+      )}
     </div>
   );
 }

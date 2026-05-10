@@ -45,8 +45,12 @@ def calculate_position(
         elif txn.side == "sell":
             if txn.quantity > remaining_quantity:
                 return PositionSummary(
+                    id=position.id,
                     symbol=position.symbol,
                     name=position.name,
+                    strategy_id=position.strategy_id,
+                    strategy_stage=position.strategy_stage,
+                    strategy_tags=position.strategy_tags,
                     status="invalid",
                     notes=position.notes,
                 )
@@ -72,8 +76,12 @@ def calculate_position(
     unrealized_pnl = (latest_price - avg_cost) * remaining_quantity if latest_price and remaining_quantity > 0 else 0.0
 
     return PositionSummary(
+        id=position.id,
         symbol=position.symbol,
         name=position.name,
+        strategy_id=position.strategy_id,
+        strategy_stage=position.strategy_stage,
+        strategy_tags=position.strategy_tags,
         status=status,
         remaining_quantity=remaining_quantity,
         avg_cost=round(avg_cost, 6),

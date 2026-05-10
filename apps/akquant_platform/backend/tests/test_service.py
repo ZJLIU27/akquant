@@ -35,6 +35,12 @@ def service(tmp_path: Path) -> PositionService:
     return svc
 
 
+def _last_position_id(service: PositionService, symbol: str = "000001") -> str:
+    matches = service.repo.get_positions_by_symbol(symbol)
+    assert matches
+    return matches[-1].id
+
+
 def test_init_creates_file(service: PositionService, tmp_path: Path):
     assert (tmp_path / "positions.yaml").exists()
 
@@ -52,14 +58,14 @@ def test_add_sell_validates_quantity(service: PositionService):
 
 def test_add_sell_after_buy(service: PositionService):
     service.add_buy("000001", "2026-05-08", 1000, 10.0)
-    txn = service.add_sell("000001", "2026-05-10", 500, 11.0)
+    txn = service.add_sell(_last_position_id(service), "2026-05-10", 500, 11.0)
     assert txn is not None
     assert txn.side == "sell"
 
 
 def test_sell_exceeding_remaining_rejected(service: PositionService):
     service.add_buy("000001", "2026-05-08", 500, 10.0)
-    result = service.add_sell("000001", "2026-05-10", 600, 11.0)
+    result = service.add_sell(_last_position_id(service), "2026-05-10", 600, 11.0)
     assert result is None
 
 
@@ -72,7 +78,7 @@ def test_list_positions(service: PositionService):
 
 def test_get_position_detail(service: PositionService):
     service.add_buy("000001", "2026-05-08", 1000, 10.0, name="平安银行")
-    detail = service.get_position_detail("000001")
+    detail = service.get_position_detail(_last_position_id(service))
     assert detail is not None
     assert detail.summary.remaining_quantity == 1000
     assert detail.summary.status == "open"
@@ -123,13 +129,14 @@ position_rule_registry:
     svc.init()
     svc.add_buy("000001", "2026-05-08", 1000, 10.0)
 
-    position = svc.bind_strategy("000001", "shaofu")
+    position_id = _last_position_id(svc)
+    position = svc.bind_strategy(position_id, "shaofu")
     assert position is not None
     assert position.strategy_id == "shaofu"
     assert position.strategy_stage == ""
     assert position.strategy_tags == ["少妇战法"]
 
-    detail = svc.get_position_detail("000001")
+    detail = svc.get_position_detail(position_id)
     assert detail is not None
     assert detail.position.strategy_stage == "trend_hold"
     assert [rule.script_id for rule in detail.effective_rules] == ["bbi_break_stop_loss"]
@@ -138,7 +145,7 @@ position_rule_registry:
 
 def test_bind_strategy_rejects_unknown_strategy(service: PositionService):
     service.add_buy("000001", "2026-05-08", 1000, 10.0)
-    assert service.bind_strategy("000001", "missing") is None
+    assert service.bind_strategy(_last_position_id(service), "missing") is None
 
 
 def test_available_strategies_include_four_large_strategies(tmp_path: Path):
@@ -230,7 +237,7 @@ def test_get_daily_chart(service: PositionService, tmp_path: Path):
 
 def test_edit_transaction(service: PositionService):
     txn = service.add_buy("000001", "2026-05-08", 1000, 10.0)
-    edited = service.edit_transaction("000001", txn.id, price=10.5)
+    edited = service.edit_transaction(_last_position_id(service), txn.id, price=10.5)
     assert edited is not None
     assert edited.price == 10.5
     assert edited.revision == 2
@@ -239,7 +246,7 @@ def test_edit_transaction(service: PositionService):
 def test_edit_transaction_full_fields(service: PositionService):
     txn = service.add_buy("000001", "2026-05-08", 1000, 10.0, fee=0)
     edited = service.edit_transaction(
-        "000001",
+        _last_position_id(service),
         txn.id,
         side="sell",
         fee=5.0,
@@ -257,18 +264,20 @@ def test_edit_transaction_full_fields(service: PositionService):
 
 def test_edit_voided_transaction_rejected(service: PositionService):
     txn = service.add_buy("000001", "2026-05-08", 1000, 10.0)
-    service.void_transaction("000001", txn.id, "mistake")
+    position_id = _last_position_id(service)
+    service.void_transaction(position_id, txn.id, "mistake")
     with pytest.raises(ValueError, match="voided"):
-        service.edit_transaction("000001", txn.id, price=12.0)
+        service.edit_transaction(position_id, txn.id, price=12.0)
 
 
 def test_void_transaction(service: PositionService):
     txn = service.add_buy("000001", "2026-05-08", 1000, 10.0)
-    voided = service.void_transaction("000001", txn.id, "错误")
+    position_id = _last_position_id(service)
+    voided = service.void_transaction(position_id, txn.id, "错误")
     assert voided is not None
     assert voided.voided is True
 
-    detail = service.get_position_detail("000001")
+    detail = service.get_position_detail(position_id)
     assert detail is not None
     assert detail.summary.remaining_quantity == 0  # voided txn ignored
     assert detail.summary.status == "closed"

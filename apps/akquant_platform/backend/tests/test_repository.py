@@ -15,6 +15,17 @@ def repo(tmp_positions_file: Path) -> PositionRepository:
     return PositionRepository(tmp_positions_file)
 
 
+def _open(repo: PositionRepository, symbol: str = "000001", **kwargs):
+    return repo.create_position_with_transaction(
+        symbol,
+        kwargs.pop("side", "buy"),
+        kwargs.pop("trade_date", "2026-05-08"),
+        kwargs.pop("quantity", 1000),
+        kwargs.pop("price", 10.5),
+        **kwargs,
+    )
+
+
 def test_init_creates_file(repo: PositionRepository, tmp_positions_file: Path):
     assert not tmp_positions_file.exists()
     repo.init_file()
@@ -34,7 +45,7 @@ def test_load_empty_file(repo: PositionRepository, tmp_positions_file: Path):
 
 
 def test_add_buy_creates_position(repo: PositionRepository):
-    txn = repo.add_transaction("000001", "buy", "2026-05-08", 1000, 10.5, fee=5, name="平安银行")
+    pos, txn = _open(repo, fee=5, name="平安银行")
     assert txn.side == "buy"
     assert txn.quantity == 1000
 
@@ -46,24 +57,25 @@ def test_add_buy_creates_position(repo: PositionRepository):
 
 
 def test_add_buy_existing_position(repo: PositionRepository):
-    repo.add_transaction("000001", "buy", "2026-05-08", 1000, 10.5, name="平安银行")
-    repo.add_transaction("000001", "buy", "2026-05-09", 500, 11.0)
+    _open(repo, name="平安银行")
+    _open(repo, trade_date="2026-05-09", quantity=500, price=11.0)
     pf = repo.load()
-    assert len(pf.positions) == 1
-    assert len(pf.positions[0].transactions) == 2
+    assert len(pf.positions) == 2
+    assert len(pf.positions[0].transactions) == 1
+    assert len(pf.positions[1].transactions) == 1
 
 
 def test_add_sell(repo: PositionRepository):
-    repo.add_transaction("000001", "buy", "2026-05-08", 1000, 10.5)
-    txn = repo.add_transaction("000001", "sell", "2026-05-10", 500, 11.0)
+    pos, _ = _open(repo)
+    txn = repo.add_transaction(pos.id, "sell", "2026-05-10", 500, 11.0)
     assert txn.side == "sell"
     pf = repo.load()
     assert len(pf.positions[0].transactions) == 2
 
 
 def test_edit_transaction(repo: PositionRepository):
-    txn = repo.add_transaction("000001", "buy", "2026-05-08", 1000, 10.5)
-    edited = repo.edit_transaction("000001", txn.id, price=10.6, quantity=800)
+    pos, txn = _open(repo)
+    edited = repo.edit_transaction(pos.id, txn.id, price=10.6, quantity=800)
     assert edited is not None
     assert edited.price == 10.6
     assert edited.quantity == 800
@@ -78,8 +90,8 @@ def test_edit_transaction(repo: PositionRepository):
 
 
 def test_edit_transaction_fee(repo: PositionRepository):
-    txn = repo.add_transaction("000001", "buy", "2026-05-08", 1000, 10.5, fee=0)
-    edited = repo.edit_transaction("000001", txn.id, fee=5.5)
+    pos, txn = _open(repo, fee=0)
+    edited = repo.edit_transaction(pos.id, txn.id, fee=5.5)
     assert edited is not None
     assert edited.fee == 5.5
     assert edited.revision == 2
@@ -91,8 +103,8 @@ def test_edit_transaction_fee(repo: PositionRepository):
 
 
 def test_edit_transaction_side(repo: PositionRepository):
-    txn = repo.add_transaction("000001", "buy", "2026-05-08", 1000, 10.5)
-    edited = repo.edit_transaction("000001", txn.id, side="sell")
+    pos, txn = _open(repo)
+    edited = repo.edit_transaction(pos.id, txn.id, side="sell")
     assert edited is not None
     assert edited.side == "sell"
 
@@ -101,9 +113,9 @@ def test_edit_transaction_side(repo: PositionRepository):
 
 
 def test_edit_transaction_notes_tags_source(repo: PositionRepository):
-    txn = repo.add_transaction("000001", "buy", "2026-05-08", 1000, 10.5)
+    pos, txn = _open(repo)
     edited = repo.edit_transaction(
-        "000001", txn.id,
+        pos.id, txn.id,
         notes="adjusted", tags=["a", "b"], source="broker",
     )
     assert edited is not None
@@ -119,8 +131,8 @@ def test_edit_transaction_notes_tags_source(repo: PositionRepository):
 
 
 def test_edit_transaction_no_change_skips_revision(repo: PositionRepository):
-    txn = repo.add_transaction("000001", "buy", "2026-05-08", 1000, 10.5)
-    edited = repo.edit_transaction("000001", txn.id, price=10.5)
+    pos, txn = _open(repo)
+    edited = repo.edit_transaction(pos.id, txn.id, price=10.5)
     assert edited is not None
     assert edited.revision == 1  # no change, revision not bumped
 
@@ -129,15 +141,15 @@ def test_edit_transaction_no_change_skips_revision(repo: PositionRepository):
 
 
 def test_edit_voided_transaction_rejected(repo: PositionRepository):
-    txn = repo.add_transaction("000001", "buy", "2026-05-08", 1000, 10.5)
-    repo.void_transaction("000001", txn.id, "wrong entry")
+    pos, txn = _open(repo)
+    repo.void_transaction(pos.id, txn.id, "wrong entry")
     with pytest.raises(ValueError, match="voided"):
-        repo.edit_transaction("000001", txn.id, price=12.0)
+        repo.edit_transaction(pos.id, txn.id, price=12.0)
 
 
 def test_void_transaction(repo: PositionRepository):
-    txn = repo.add_transaction("000001", "buy", "2026-05-08", 1000, 10.5)
-    voided = repo.void_transaction("000001", txn.id, void_reason="输入错误")
+    pos, txn = _open(repo)
+    voided = repo.void_transaction(pos.id, txn.id, void_reason="输入错误")
     assert voided is not None
     assert voided.voided is True
     assert voided.void_reason == "输入错误"
@@ -147,8 +159,8 @@ def test_void_transaction(repo: PositionRepository):
 
 
 def test_edit_nonexistent_transaction(repo: PositionRepository):
-    repo.add_transaction("000001", "buy", "2026-05-08", 1000, 10.5)
-    result = repo.edit_transaction("000001", "nonexistent-id", price=10.6)
+    pos, _ = _open(repo)
+    result = repo.edit_transaction(pos.id, "nonexistent-id", price=10.6)
     assert result is None
 
 
@@ -158,8 +170,8 @@ def test_void_nonexistent_position(repo: PositionRepository):
 
 
 def test_add_rule(repo: PositionRepository):
-    repo.add_transaction("000001", "buy", "2026-05-08", 1000, 10.5)
-    rule = repo.add_rule("000001", "risk", "manual_take_profit_stop_loss", {"stop_loss_price": 9.8})
+    pos, _ = _open(repo)
+    rule = repo.add_rule(pos.id, "risk", "manual_take_profit_stop_loss", {"stop_loss_price": 9.8})
     assert rule is not None
     assert rule.script_id == "manual_take_profit_stop_loss"
 
@@ -168,37 +180,37 @@ def test_add_rule(repo: PositionRepository):
 
 
 def test_delete_rule(repo: PositionRepository):
-    repo.add_transaction("000001", "buy", "2026-05-08", 1000, 10.5)
-    rule = repo.add_rule("000001", "risk", "manual_take_profit_stop_loss")
-    assert repo.delete_rule("000001", rule.id)
+    pos, _ = _open(repo)
+    rule = repo.add_rule(pos.id, "risk", "manual_take_profit_stop_loss")
+    assert repo.delete_rule(pos.id, rule.id)
     pf = repo.load()
     assert len(pf.positions[0].rules) == 0
 
 
 def test_delete_nonexistent_rule(repo: PositionRepository):
-    repo.add_transaction("000001", "buy", "2026-05-08", 1000, 10.5)
-    assert not repo.delete_rule("000001", "nonexistent-id")
+    pos, _ = _open(repo)
+    assert not repo.delete_rule(pos.id, "nonexistent-id")
 
 
 def test_validate_no_errors(repo: PositionRepository):
-    repo.add_transaction("000001", "buy", "2026-05-08", 1000, 10.0)
+    _open(repo, price=10.0)
     errors = repo.validate()
     assert errors == []
 
 
 def test_validate_sell_exceeds_remaining(repo: PositionRepository):
-    repo.add_transaction("000001", "buy", "2026-05-08", 500, 10.0)
-    repo.add_transaction("000001", "sell", "2026-05-10", 600, 11.0)
+    pos, _ = _open(repo, quantity=500, price=10.0)
+    repo.add_transaction(pos.id, "sell", "2026-05-10", 600, 11.0)
     errors = repo.validate()
     assert any("sell exceeds remaining" in e for e in errors)
 
 
-def test_validate_duplicate_symbols(repo: PositionRepository):
-    repo.add_transaction("000001", "buy", "2026-05-08", 1000, 10.0, name="A")
-    # Manually inject a duplicate
+def test_validate_duplicate_position_ids(repo: PositionRepository):
+    _open(repo, price=10.0, name="A")
+    # Manually inject a duplicate id
     pf = repo.load()
     from app.positions.models import Position
-    pf.positions.append(Position(id="dup", symbol="000001", name="B"))
+    pf.positions.append(Position(id=pf.positions[0].id, symbol="000001", name="B"))
     repo.save(pf)
     errors = repo.validate()
-    assert any("Duplicate symbol" in e for e in errors)
+    assert any("Duplicate position id" in e for e in errors)

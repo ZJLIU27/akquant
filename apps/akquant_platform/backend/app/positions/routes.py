@@ -48,40 +48,51 @@ def list_positions() -> PositionListResponse:
     return get_service().list_positions()
 
 
-@router.get("/positions/{symbol}")
-def get_position(symbol: str) -> PositionDetail:
-    detail = get_service().get_position_detail(symbol)
+@router.get("/positions/{position_id}")
+def get_position(position_id: str) -> PositionDetail:
+    detail = get_service().get_position_detail(position_id)
     if detail is None:
-        raise HTTPException(status_code=404, detail=f"Position not found: {symbol}")
+        raise HTTPException(status_code=404, detail=f"Position not found: {position_id}")
     return detail
 
 
-@router.get("/positions/{symbol}/intraday")
-def get_intraday(symbol: str) -> dict[str, Any]:
+@router.get("/positions/{position_id}/intraday")
+def get_intraday(position_id: str) -> dict[str, Any]:
     svc = get_service()
-    df = svc.get_intraday_df(symbol)
+    detail = svc.get_position_detail(position_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail=f"Position not found: {position_id}")
+    df = svc.get_intraday_df_for_position(position_id)
     if df is None:
-        return {"symbol": symbol, "data": None, "status": "missing"}
+        return {"symbol": detail.position.symbol, "data": None, "status": "missing"}
     return {
-        "symbol": symbol,
+        "symbol": detail.position.symbol,
         "data": df.to_dict(orient="records"),
         "rows": len(df),
         "status": "ok",
     }
 
 
-@router.get("/positions/{symbol}/daily")
-def get_daily(symbol: str) -> dict[str, Any]:
-    return get_service().get_daily_chart(symbol)
+@router.get("/positions/{position_id}/daily")
+def get_daily(position_id: str) -> dict[str, Any]:
+    result = get_service().get_daily_chart_for_position(position_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Position not found: {position_id}")
+    return result
 
 
-@router.post("/positions/{symbol}/transactions")
-def add_transaction(symbol: str, txn: dict[str, Any]) -> Transaction:
+@router.post("/positions/{position_ref}/transactions")
+def add_transaction(position_ref: str, txn: dict[str, Any]) -> Transaction:
     svc = get_service()
     side = txn.get("side", "buy")
-    if side == "buy":
+    if svc.repo.get_position(position_ref) is None:
+        if side != "buy":
+            raise HTTPException(
+                status_code=400,
+                detail="Sell requires an existing position id",
+            )
         result = svc.add_buy(
-            symbol=symbol,
+            symbol=position_ref,
             trade_date=txn["trade_date"],
             quantity=txn["quantity"],
             price=txn["price"],
@@ -90,9 +101,10 @@ def add_transaction(symbol: str, txn: dict[str, Any]) -> Transaction:
             notes=txn.get("notes", ""),
             tags=txn.get("tags"),
         )
-    elif side == "sell":
-        result = svc.add_sell(
-            symbol=symbol,
+    elif side in {"buy", "sell"}:
+        result = svc.add_position_transaction(
+            position_id=position_ref,
+            side=side,
             trade_date=txn["trade_date"],
             quantity=txn["quantity"],
             price=txn["price"],
@@ -101,17 +113,17 @@ def add_transaction(symbol: str, txn: dict[str, Any]) -> Transaction:
             tags=txn.get("tags"),
         )
         if result is None:
-            raise HTTPException(status_code=400, detail="Sell exceeds remaining quantity or position not found")
+            raise HTTPException(status_code=400, detail="Transaction exceeds remaining quantity or position not found")
     else:
         raise HTTPException(status_code=400, detail=f"Invalid side: {side}")
     return result
 
 
-@router.patch("/positions/{symbol}/transactions/{transaction_id}")
-def edit_transaction(symbol: str, transaction_id: str, updates: TransactionUpdate) -> Transaction:
+@router.patch("/positions/{position_id}/transactions/{transaction_id}")
+def edit_transaction(position_id: str, transaction_id: str, updates: TransactionUpdate) -> Transaction:
     payload = updates.model_dump(exclude_unset=True)
     try:
-        result = get_service().edit_transaction(symbol, transaction_id, **payload)
+        result = get_service().edit_transaction(position_id, transaction_id, **payload)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if result is None:
@@ -119,18 +131,18 @@ def edit_transaction(symbol: str, transaction_id: str, updates: TransactionUpdat
     return result
 
 
-@router.post("/positions/{symbol}/transactions/{transaction_id}/void")
-def void_transaction(symbol: str, transaction_id: str, body: VoidTransactionRequest) -> Transaction:
-    result = get_service().void_transaction(symbol, transaction_id, body.reason)
+@router.post("/positions/{position_id}/transactions/{transaction_id}/void")
+def void_transaction(position_id: str, transaction_id: str, body: VoidTransactionRequest) -> Transaction:
+    result = get_service().void_transaction(position_id, transaction_id, body.reason)
     if result is None:
         raise HTTPException(status_code=404, detail="Transaction not found")
     return result
 
 
-@router.post("/positions/{symbol}/rules")
-def add_rule(symbol: str, rule: dict[str, Any]) -> PositionRule:
+@router.post("/positions/{position_id}/rules")
+def add_rule(position_id: str, rule: dict[str, Any]) -> PositionRule:
     result = get_service().add_rule(
-        symbol=symbol,
+        position_id=position_id,
         category=rule["category"],
         script_id=rule["script_id"],
         params=rule.get("params"),
@@ -140,18 +152,18 @@ def add_rule(symbol: str, rule: dict[str, Any]) -> PositionRule:
     return result
 
 
-@router.delete("/positions/{symbol}/rules/{rule_id}")
-def delete_rule(symbol: str, rule_id: str) -> dict[str, bool]:
-    ok = get_service().delete_rule(symbol, rule_id)
+@router.delete("/positions/{position_id}/rules/{rule_id}")
+def delete_rule(position_id: str, rule_id: str) -> dict[str, bool]:
+    ok = get_service().delete_rule(position_id, rule_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Rule not found")
     return {"ok": True}
 
 
-@router.patch("/positions/{symbol}/strategy")
-def bind_strategy(symbol: str, payload: dict[str, Any]) -> dict[str, Any]:
+@router.patch("/positions/{position_id}/strategy")
+def bind_strategy(position_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     position = get_service().bind_strategy(
-        symbol=symbol,
+        position_id=position_id,
         strategy_id=payload.get("strategy_id", ""),
     )
     if position is None:

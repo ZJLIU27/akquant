@@ -105,8 +105,17 @@ class PositionFile(BaseModel):
 class PositionSummary(BaseModel):
     """Computed summary for a single position."""
 
+    id: str = ""
     symbol: str
     name: str = ""
+    strategy_id: str = ""
+    strategy_title: str = ""
+    strategy_stage: str = ""
+    strategy_tags: list[str] = Field(default_factory=list)
+    rule_count: int = 0
+    risk_rule_count: int = 0
+    alert_rule_count: int = 0
+    rule_titles: list[str] = Field(default_factory=list)
     status: Literal["open", "closed", "invalid"] = "open"
     remaining_quantity: int = 0
     avg_cost: float = 0.0
@@ -125,7 +134,7 @@ class RuleResult(BaseModel):
 
     rule_id: str
     script_id: str
-    status: Literal["normal", "triggered", "unknown", "error"] = "normal"
+    status: Literal["normal", "triggered", "completed", "unknown", "error"] = "normal"
     level: Literal["info", "warning", "danger"] = "info"
     message: str = ""
 

@@ -12,6 +12,18 @@ from pydantic import BaseModel, Field
 
 from .models import Position, PositionSummary, RuleResult
 
+STRATEGY_DISPLAY_TITLES = {
+    "shaofu": "B1",
+    "b2": "B2",
+    "brick_chart": "砖形图",
+    "single_pin_20_30": "单针下20/30",
+}
+
+
+def strategy_display_title(strategy_id: str, fallback: str = "") -> str:
+    """Return the canonical short title for a registered position strategy."""
+    return STRATEGY_DISPLAY_TITLES.get(strategy_id, fallback or strategy_id)
+
 
 class RegistryEntry(BaseModel):
     """A single entry from the rule registry."""
@@ -130,7 +142,7 @@ class RuleRegistry:
         for key, entry in self.strategies.items():
             result.append({
                 "strategy_id": key,
-                "title": entry.title,
+                "title": strategy_display_title(key, entry.title),
                 "tags": entry.tags,
                 "note_paths": entry.note_paths,
                 "stages": [
@@ -259,7 +271,7 @@ def evaluate_rules(
             level = result.get("level", "info")
             message = result.get("message", "")
 
-            if status not in ("normal", "triggered", "unknown"):
+            if status not in ("normal", "triggered", "completed", "unknown"):
                 status = "error"
             if level not in ("info", "warning", "danger"):
                 level = "danger"

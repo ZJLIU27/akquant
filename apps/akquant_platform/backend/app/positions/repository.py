@@ -56,27 +56,34 @@ class PositionRepository:
         """Return all positions."""
         return self.load().positions
 
-    def get_position(self, symbol: str) -> Position | None:
-        """Find a position by symbol."""
+    def get_position(self, position_id: str) -> Position | None:
+        """Find a position by id."""
         for p in self.load().positions:
-            if p.symbol == symbol:
+            if p.id == position_id:
                 return p
         return None
 
-    def _get_or_create_position(
+    def get_positions_by_symbol(self, symbol: str) -> list[Position]:
+        """Find all positions for a symbol."""
+        return [p for p in self.load().positions if p.symbol == symbol]
+
+    def _create_position(
         self, pf: PositionFile, symbol: str, name: str = ""
     ) -> tuple[PositionFile, Position]:
-        """Find existing position or create a new one."""
-        for p in pf.positions:
-            if p.symbol == symbol:
-                return pf, p
+        """Create a new independent position/trade plan."""
         pos = Position(id=_new_id(), symbol=symbol, name=name)
         pf.positions.append(pos)
         return pf, pos
 
+    def _find_position(self, pf: PositionFile, position_id: str) -> Position | None:
+        for p in pf.positions:
+            if p.id == position_id:
+                return p
+        return None
+
     def add_transaction(
         self,
-        symbol: str,
+        position_id: str,
         side: str,
         trade_date: str,
         quantity: int,
@@ -85,11 +92,12 @@ class PositionRepository:
         source: str = "manual",
         tags: list[str] | None = None,
         notes: str = "",
-        name: str = "",
     ) -> Transaction:
-        """Add a new transaction. Creates the position if needed."""
+        """Add a transaction to an existing independent position."""
         pf = self.load()
-        pf, pos = self._get_or_create_position(pf, symbol, name)
+        pos = self._find_position(pf, position_id)
+        if pos is None:
+            raise KeyError(f"Position not found: {position_id}")
         now = _now()
         txn = Transaction(
             id=_new_id(),
@@ -110,9 +118,45 @@ class PositionRepository:
         self.save(pf)
         return txn
 
-    def edit_transaction(
+    def create_position_with_transaction(
         self,
         symbol: str,
+        side: str,
+        trade_date: str,
+        quantity: int,
+        price: float,
+        fee: float = 0.0,
+        source: str = "manual",
+        tags: list[str] | None = None,
+        notes: str = "",
+        name: str = "",
+    ) -> tuple[Position, Transaction]:
+        """Create a new independent position and attach its first transaction."""
+        pf = self.load()
+        pf, pos = self._create_position(pf, symbol, name)
+        now = _now()
+        txn = Transaction(
+            id=_new_id(),
+            side=side,
+            trade_date=trade_date,
+            quantity=quantity,
+            price=price,
+            fee=fee,
+            source=source,
+            tags=tags or [],
+            notes=notes,
+            created_at=now,
+            updated_at=now,
+            revision=1,
+            voided=False,
+        )
+        pos.transactions.append(txn)
+        self.save(pf)
+        return pos, txn
+
+    def edit_transaction(
+        self,
+        position_id: str,
         transaction_id: str,
         **updates: Any,
     ) -> Transaction | None:
@@ -122,11 +166,7 @@ class PositionRepository:
         Raises ValueError if transaction is voided or no actual changes.
         """
         pf = self.load()
-        pos = None
-        for p in pf.positions:
-            if p.symbol == symbol:
-                pos = p
-                break
+        pos = self._find_position(pf, position_id)
         if pos is None:
             return None
 
@@ -182,17 +222,13 @@ class PositionRepository:
 
     def void_transaction(
         self,
-        symbol: str,
+        position_id: str,
         transaction_id: str,
         void_reason: str = "",
     ) -> Transaction | None:
         """Void a transaction (soft delete). Sets voided=True and writes audit log."""
         pf = self.load()
-        pos = None
-        for p in pf.positions:
-            if p.symbol == symbol:
-                pos = p
-                break
+        pos = self._find_position(pf, position_id)
         if pos is None:
             return None
 
@@ -224,7 +260,7 @@ class PositionRepository:
 
     def add_rule(
         self,
-        symbol: str,
+        position_id: str,
         category: str,
         script_id: str,
         params: dict[str, Any] | None = None,
@@ -232,11 +268,7 @@ class PositionRepository:
     ) -> PositionRule | None:
         """Add a rule to a position."""
         pf = self.load()
-        pos = None
-        for p in pf.positions:
-            if p.symbol == symbol:
-                pos = p
-                break
+        pos = self._find_position(pf, position_id)
         if pos is None:
             return None
 
@@ -251,14 +283,10 @@ class PositionRepository:
         self.save(pf)
         return rule
 
-    def delete_rule(self, symbol: str, rule_id: str) -> bool:
+    def delete_rule(self, position_id: str, rule_id: str) -> bool:
         """Remove a rule from a position."""
         pf = self.load()
-        pos = None
-        for p in pf.positions:
-            if p.symbol == symbol:
-                pos = p
-                break
+        pos = self._find_position(pf, position_id)
         if pos is None:
             return False
 
@@ -269,7 +297,7 @@ class PositionRepository:
 
     def update_strategy_binding(
         self,
-        symbol: str,
+        position_id: str,
         strategy_id: str,
         strategy_stage: str = "",
         strategy_tags: list[str] | None = None,
@@ -277,11 +305,7 @@ class PositionRepository:
     ) -> Position | None:
         """Bind a position to a large strategy and one of its stages."""
         pf = self.load()
-        pos = None
-        for p in pf.positions:
-            if p.symbol == symbol:
-                pos = p
-                break
+        pos = self._find_position(pf, position_id)
         if pos is None:
             return None
 
@@ -307,13 +331,13 @@ class PositionRepository:
         except Exception as e:
             return [f"YAML parse error: {e}"]
 
-        # Check duplicate symbols
-        symbols = [p.symbol for p in pf.positions]
+        # Duplicate symbols are allowed: each Position is an independent trade plan.
+        position_ids = [p.id for p in pf.positions]
         seen: set[str] = set()
-        for s in symbols:
-            if s in seen:
-                errors.append(f"Duplicate symbol: {s}")
-            seen.add(s)
+        for position_id in position_ids:
+            if position_id in seen:
+                errors.append(f"Duplicate position id: {position_id}")
+            seen.add(position_id)
 
         # Check for sell exceeding remaining
         for pos in pf.positions:

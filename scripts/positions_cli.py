@@ -3,8 +3,8 @@
 
 用法:
     python scripts/positions_cli.py init
-    python scripts/positions_cli.py buy --symbol 000001 --name 平安银行 --date 2026-05-08 --quantity 1000 --price 10.50 --fee 5
-    python scripts/positions_cli.py sell --symbol 000001 --date 2026-05-10 --quantity 500 --price 11.00 --fee 5
+    python scripts/positions_cli.py open --symbol 000001 --name 平安银行 --date 2026-05-08 --quantity 1000 --price 10.50 --fee 5
+    python scripts/positions_cli.py transact --position-id <id> --side sell --date 2026-05-10 --quantity 500 --price 11.00 --fee 5
     python scripts/positions_cli.py list
     python scripts/positions_cli.py validate
 """
@@ -42,14 +42,17 @@ def cmd_buy(service: PositionService, args: argparse.Namespace) -> None:
         name=args.name,
         notes=args.notes,
     )
+    positions = service.repo.get_positions_by_symbol(args.symbol)
+    position_id = positions[-1].id if positions else ""
     print(
-        f"Buy transaction added: {txn.id[:8]}... {args.symbol} {args.quantity}@{args.price}"
+        f"New position opened: {position_id} | transaction {txn.id[:8]}... {args.symbol} {args.quantity}@{args.price}"
     )
 
 
-def cmd_sell(service: PositionService, args: argparse.Namespace) -> None:
-    txn = service.add_sell(
-        symbol=args.symbol,
+def cmd_transact(service: PositionService, args: argparse.Namespace) -> None:
+    txn = service.add_position_transaction(
+        position_id=args.position_id,
+        side=args.side,
         trade_date=args.date,
         quantity=args.quantity,
         price=args.price,
@@ -58,12 +61,12 @@ def cmd_sell(service: PositionService, args: argparse.Namespace) -> None:
     )
     if txn is None:
         print(
-            f"Error: cannot sell {args.quantity} of {args.symbol} (insufficient holdings or position not found)",
+            f"Error: cannot add {args.side} transaction to {args.position_id} (insufficient holdings or position not found)",
             file=sys.stderr,
         )
         sys.exit(1)
     print(
-        f"Sell transaction added: {txn.id[:8]}... {args.symbol} {args.quantity}@{args.price}"
+        f"Transaction added: {txn.id[:8]}... {args.position_id} {args.side} {args.quantity}@{args.price}"
     )
 
 
@@ -74,15 +77,15 @@ def cmd_list(service: PositionService) -> None:
         return
 
     print(
-        f"{'Symbol':<8} {'Name':<10} {'Qty':>6} {'AvgCost':>10} {'Price':>10} {'MV':>12} {'PnL':>12} {'Weight':>8} {'Status':<8}"
+        f"{'Position ID':<36} {'Symbol':<8} {'Name':<10} {'Qty':>6} {'AvgCost':>10} {'Price':>10} {'MV':>12} {'PnL':>12} {'Weight':>8} {'Status':<8}"
     )
-    print("-" * 94)
+    print("-" * 133)
     for p in result.positions:
         price_str = f"{p.latest_price:.2f}" if p.latest_price else "N/A"
         mv_str = f"{p.market_value:.2f}" if p.market_value else "0.00"
         pnl = p.realized_pnl + p.unrealized_pnl
         print(
-            f"{p.symbol:<8} {p.name:<10} {p.remaining_quantity:>6} "
+            f"{p.id:<36} {p.symbol:<8} {p.name:<10} {p.remaining_quantity:>6} "
             f"{p.avg_cost:>10.4f} {price_str:>10} {mv_str:>12} "
             f"{pnl:>12.2f} {p.position_weight * 100:>7.1f}% {p.status:<8}"
         )
@@ -128,8 +131,8 @@ def main() -> None:
     # init
     subparsers.add_parser("init", help="Initialize positions file")
 
-    # buy
-    buy_parser = subparsers.add_parser("buy", help="Add a buy transaction")
+    # open / buy
+    buy_parser = subparsers.add_parser("open", help="Open a new independent position")
     buy_parser.add_argument("--symbol", required=True)
     buy_parser.add_argument("--name", default="")
     buy_parser.add_argument("--date", required=True)
@@ -138,14 +141,24 @@ def main() -> None:
     buy_parser.add_argument("--fee", type=float, default=0)
     buy_parser.add_argument("--notes", default="")
 
-    # sell
-    sell_parser = subparsers.add_parser("sell", help="Add a sell transaction")
-    sell_parser.add_argument("--symbol", required=True)
-    sell_parser.add_argument("--date", required=True)
-    sell_parser.add_argument("--quantity", type=int, required=True)
-    sell_parser.add_argument("--price", type=float, required=True)
-    sell_parser.add_argument("--fee", type=float, default=0)
-    sell_parser.add_argument("--notes", default="")
+    buy_alias_parser = subparsers.add_parser("buy", help="Alias for open")
+    buy_alias_parser.add_argument("--symbol", required=True)
+    buy_alias_parser.add_argument("--name", default="")
+    buy_alias_parser.add_argument("--date", required=True)
+    buy_alias_parser.add_argument("--quantity", type=int, required=True)
+    buy_alias_parser.add_argument("--price", type=float, required=True)
+    buy_alias_parser.add_argument("--fee", type=float, default=0)
+    buy_alias_parser.add_argument("--notes", default="")
+
+    # transact
+    txn_parser = subparsers.add_parser("transact", help="Add a buy/sell operation to an existing position")
+    txn_parser.add_argument("--position-id", required=True)
+    txn_parser.add_argument("--side", choices=["buy", "sell"], required=True)
+    txn_parser.add_argument("--date", required=True)
+    txn_parser.add_argument("--quantity", type=int, required=True)
+    txn_parser.add_argument("--price", type=float, required=True)
+    txn_parser.add_argument("--fee", type=float, default=0)
+    txn_parser.add_argument("--notes", default="")
 
     # list
     subparsers.add_parser("list", help="List all positions")
@@ -196,10 +209,10 @@ def main() -> None:
 
     if args.command == "init":
         cmd_init(service)
-    elif args.command == "buy":
+    elif args.command in {"open", "buy"}:
         cmd_buy(service, args)
-    elif args.command == "sell":
-        cmd_sell(service, args)
+    elif args.command == "transact":
+        cmd_transact(service, args)
     elif args.command == "list":
         cmd_list(service)
     elif args.command == "validate":

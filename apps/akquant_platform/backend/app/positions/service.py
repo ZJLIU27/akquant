@@ -15,6 +15,8 @@ from .indicators import (
     compute_bbi,
     compute_brick_series,
     compute_indicators,
+    compute_kdj_series,
+    compute_macd_series,
     compute_single_pin_series,
     compute_white_line,
 )
@@ -28,7 +30,7 @@ from .models import (
     Transaction,
 )
 from .repository import PositionRepository
-from .rules import RuleRegistry, evaluate_rules
+from .rules import RuleRegistry, evaluate_rules, strategy_display_title
 
 
 class PositionService:
@@ -75,6 +77,7 @@ class PositionService:
                 pos.symbol, self.config.daily_data_dir
             )
             summary = calculate_position(pos, price, source)
+            self._enrich_summary_with_strategy_and_rules(pos, summary)
             summaries.append(summary)
 
         summaries = calculate_position_weights(summaries)
@@ -85,16 +88,16 @@ class PositionService:
             total_market_value=round(total_mv, 2),
         )
 
-    def get_position_detail(self, symbol: str) -> PositionDetail | None:
+    def get_position_detail(self, position_id: str) -> PositionDetail | None:
         """Get full position detail with rules evaluation."""
-        pos = self.repo.get_position(symbol)
+        pos = self.repo.get_position(position_id)
         if pos is None:
             return None
 
-        price, source = self.cache.resolve_price(symbol, self.config.daily_data_dir)
+        price, source = self.cache.resolve_price(pos.symbol, self.config.daily_data_dir)
         summary = calculate_position(pos, price, source)
 
-        daily_df = self._load_daily_df(symbol)
+        daily_df = self._load_daily_df(pos.symbol)
         try:
             indicators = compute_indicators(daily_df)
         except Exception:
@@ -105,7 +108,7 @@ class PositionService:
             market = {
                 "latest_price": price,
                 "price_source": source,
-                "intraday_df": self.cache.get_intraday_df(symbol),
+                "intraday_df": self.cache.get_intraday_df(pos.symbol),
                 "daily_df": daily_df,
                 "indicators": indicators,
             }
@@ -140,7 +143,7 @@ class PositionService:
             for summary in listed.positions:
                 if summary.status != "open":
                     continue
-                detail = self.get_position_detail(summary.symbol)
+                detail = self.get_position_detail(summary.id)
                 raw_position = detail.position if detail is not None else None
                 position_context = self._position_ai_summary(
                     summary,
@@ -204,6 +207,28 @@ class PositionService:
             }
 
         detail = self.get_position_detail(symbol)
+        if detail is None:
+            matches = self.repo.get_positions_by_symbol(symbol)
+            if len(matches) == 1:
+                detail = self.get_position_detail(matches[0].id)
+            elif len(matches) > 1:
+                return {
+                    "schema_version": 1,
+                    "generated_at": generated_at,
+                    "source": "akquant",
+                    "symbol": symbol,
+                    "position": None,
+                    "transactions": [],
+                    "market": self._market_ai_context(
+                        symbol,
+                        include_daily=include_daily,
+                        days=days,
+                    ),
+                    "rule_results": [],
+                    "data_warnings": [
+                        f"multiple positions found for symbol {symbol}; use position id"
+                    ],
+                }
         if detail is None:
             return {
                 "schema_version": 1,
@@ -291,6 +316,8 @@ class PositionService:
         bbi = compute_bbi(close)
         white = compute_white_line(close)
         single_pin = compute_single_pin_series(df)
+        kdj = compute_kdj_series(df)
+        macd = compute_macd_series(close)
         brick = compute_brick_series(df)
         brick_prev = brick.shift(1).fillna(0.0)
         brick_delta = brick - brick_prev
@@ -337,6 +364,12 @@ class PositionService:
                     "single_pin_long": _float_or_none(
                         single_pin["single_pin_long"].loc[idx]
                     ),
+                    "kdj_k": _float_or_none(kdj["kdj_k"].loc[idx]),
+                    "kdj_d": _float_or_none(kdj["kdj_d"].loc[idx]),
+                    "kdj_j": _float_or_none(kdj["kdj_j"].loc[idx]),
+                    "macd_dif": _float_or_none(macd["macd_dif"].loc[idx]),
+                    "macd_dea": _float_or_none(macd["macd_dea"].loc[idx]),
+                    "macd": _float_or_none(macd["macd"].loc[idx]),
                     "brick": _float_or_none(brick_value),
                     "brick_base": _float_or_none(
                         min(float(brick_base), float(brick_value))
@@ -359,6 +392,13 @@ class PositionService:
             "status": "ok",
         }
 
+    def get_daily_chart_for_position(self, position_id: str, days: int = 130) -> dict[str, Any] | None:
+        """Return daily chart data for a position id."""
+        pos = self.repo.get_position(position_id)
+        if pos is None:
+            return None
+        return self.get_daily_chart(pos.symbol, days=days)
+
     # --- Write operations ---
 
     def add_buy(
@@ -373,9 +413,8 @@ class PositionService:
         source: str = "manual",
         tags: list[str] | None = None,
     ) -> Transaction:
-        """Add a buy transaction. Creates position if new."""
-        was_new = self.repo.get_position(symbol) is None
-        txn = self.repo.add_transaction(
+        """Create a new independent position with an initial buy transaction."""
+        pos, txn = self.repo.create_position_with_transaction(
             symbol=symbol,
             side="buy",
             trade_date=trade_date,
@@ -387,14 +426,12 @@ class PositionService:
             source=source,
             tags=tags,
         )
-        # If new position becomes open, trigger intraday refresh
-        if was_new:
-            self._trigger_intraday_refresh(symbol)
+        self._trigger_intraday_refresh(pos.symbol)
         return txn
 
     def add_sell(
         self,
-        symbol: str,
+        position_id: str,
         trade_date: str,
         quantity: int,
         price: float,
@@ -403,8 +440,8 @@ class PositionService:
         source: str = "manual",
         tags: list[str] | None = None,
     ) -> Transaction | None:
-        """Add a sell transaction. Validates remaining quantity first."""
-        pos = self.repo.get_position(symbol)
+        """Add a sell transaction to an existing position. Validates remaining quantity first."""
+        pos = self.repo.get_position(position_id)
         if pos is None:
             return None
 
@@ -413,7 +450,7 @@ class PositionService:
             return None
 
         return self.repo.add_transaction(
-            symbol=symbol,
+            position_id=position_id,
             side="sell",
             trade_date=trade_date,
             quantity=quantity,
@@ -424,21 +461,56 @@ class PositionService:
             tags=tags,
         )
 
-    def edit_transaction(
-        self, symbol: str, transaction_id: str, **updates: Any
+    def add_position_transaction(
+        self,
+        position_id: str,
+        side: str,
+        trade_date: str,
+        quantity: int,
+        price: float,
+        fee: float = 0.0,
+        notes: str = "",
+        source: str = "manual",
+        tags: list[str] | None = None,
     ) -> Transaction | None:
-        return self.repo.edit_transaction(symbol, transaction_id, **updates)
+        """Add a buy/sell operation to an existing independent position."""
+        pos = self.repo.get_position(position_id)
+        if pos is None:
+            return None
+        if side == "sell":
+            summary = calculate_position(pos)
+            if summary.remaining_quantity < quantity:
+                return None
+        try:
+            return self.repo.add_transaction(
+                position_id=position_id,
+                side=side,
+                trade_date=trade_date,
+                quantity=quantity,
+                price=price,
+                fee=fee,
+                notes=notes,
+                source=source,
+                tags=tags,
+            )
+        except KeyError:
+            return None
+
+    def edit_transaction(
+        self, position_id: str, transaction_id: str, **updates: Any
+    ) -> Transaction | None:
+        return self.repo.edit_transaction(position_id, transaction_id, **updates)
 
     def void_transaction(
-        self, symbol: str, transaction_id: str, void_reason: str = ""
+        self, position_id: str, transaction_id: str, void_reason: str = ""
     ) -> Transaction | None:
-        return self.repo.void_transaction(symbol, transaction_id, void_reason)
+        return self.repo.void_transaction(position_id, transaction_id, void_reason)
 
     # --- Rules ---
 
     def add_rule(
         self,
-        symbol: str,
+        position_id: str,
         category: str,
         script_id: str,
         params: dict[str, Any] | None = None,
@@ -446,17 +518,17 @@ class PositionService:
         """Add a rule. Validates script_id against registry."""
         if not self.registry.validate_script_id(script_id):
             return None
-        return self.repo.add_rule(symbol, category, script_id, params)
+        return self.repo.add_rule(position_id, category, script_id, params)
 
-    def delete_rule(self, symbol: str, rule_id: str) -> bool:
-        return self.repo.delete_rule(symbol, rule_id)
+    def delete_rule(self, position_id: str, rule_id: str) -> bool:
+        return self.repo.delete_rule(position_id, rule_id)
 
     def get_available_rules(self) -> list[dict[str, Any]]:
         return self.registry.get_script_ids()
 
     def bind_strategy(
         self,
-        symbol: str,
+        position_id: str,
         strategy_id: str,
     ) -> Position | None:
         """Bind a position to a registered large strategy.
@@ -476,7 +548,7 @@ class PositionService:
             note_paths = strategy.note_paths
 
         return self.repo.update_strategy_binding(
-            symbol,
+            position_id,
             strategy_id,
             "",
             strategy_tags=tags,
@@ -485,6 +557,40 @@ class PositionService:
 
     def get_available_strategies(self) -> list[dict[str, Any]]:
         return self.registry.get_strategy_ids()
+
+    def _enrich_summary_with_strategy_and_rules(
+        self,
+        position: Position,
+        summary: PositionSummary,
+    ) -> None:
+        """Attach lightweight strategy/rule info for the position list."""
+        strategy = (
+            self.registry.get_strategy_entry(position.strategy_id)
+            if position.strategy_id
+            else None
+        )
+        summary.strategy_title = strategy_display_title(
+            position.strategy_id,
+            strategy.title if strategy is not None else "",
+        )
+
+        daily_df = self._load_daily_df(position.symbol)
+        strategy_stage = self._resolve_strategy_stage(position, summary, daily_df)
+        summary.strategy_stage = strategy_stage
+
+        effective_rules = self._effective_rules(position, strategy_stage)
+        rule_titles_by_id = {
+            item["script_id"]: item.get("title") or item["script_id"]
+            for item in self.registry.get_script_ids()
+        }
+        summary.rule_count = len(effective_rules)
+        summary.risk_rule_count = sum(1 for rule in effective_rules if rule.category == "risk")
+        summary.alert_rule_count = sum(1 for rule in effective_rules if rule.category == "alert")
+        summary.rule_titles = [
+            rule_titles_by_id.get(rule.script_id, rule.script_id)
+            for rule in effective_rules
+            if rule.enabled
+        ]
 
     # --- Validation ---
 
@@ -496,6 +602,13 @@ class PositionService:
     def get_intraday_df(self, symbol: str) -> Any:
         """Get intraday DataFrame for a symbol."""
         return self.cache.get_intraday_df(symbol)
+
+    def get_intraday_df_for_position(self, position_id: str) -> Any:
+        """Get intraday DataFrame for a position id."""
+        pos = self.repo.get_position(position_id)
+        if pos is None:
+            return None
+        return self.cache.get_intraday_df(pos.symbol)
 
     def needs_intraday_refresh(self, symbol: str) -> bool:
         """Check if symbol needs intraday data refresh."""
@@ -529,6 +642,7 @@ class PositionService:
         include_rule_summary: bool = False,
     ) -> dict[str, Any]:
         data: dict[str, Any] = {
+            "id": summary.id,
             "symbol": summary.symbol,
             "name": summary.name,
             "status": summary.status,
@@ -553,7 +667,7 @@ class PositionService:
             "notes": summary.notes,
         }
         if include_rule_summary:
-            detail = self.get_position_detail(summary.symbol)
+            detail = self.get_position_detail(summary.id)
             counts = {"danger": 0, "warning": 0, "info": 0}
             if detail is not None:
                 for rule_result in detail.rule_results:
