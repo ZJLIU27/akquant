@@ -66,6 +66,21 @@ export default function RulePanel({ symbol, rules, ruleResults, onReload }: Prop
     return colors.green;
   };
 
+  const statusLabel = (status: RuleResult['status']) => {
+    if (status === 'completed') return '已完成';
+    if (status === 'triggered') return '需处理';
+    if (status === 'unknown') return '待评估';
+    if (status === 'error') return '异常';
+    return '正常';
+  };
+
+  const statusColor = (result: RuleResult) => {
+    if (result.status === 'completed') return colors.green;
+    if (result.status === 'error' || result.level === 'danger') return colors.red;
+    if (result.status === 'triggered' || result.level === 'warning') return colors.activeYellow;
+    return colors.green;
+  };
+
   return (
     <div>
       {rules.length === 0 && !showAdd && (
@@ -99,6 +114,17 @@ export default function RulePanel({ symbol, rules, ruleResults, onReload }: Prop
                   width: 8, height: 8, borderRadius: '50%',
                   background: levelColor(result.level),
                 }} />
+                <span style={{
+                  padding: '2px 7px',
+                  borderRadius: 4,
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: statusColor(result),
+                  background: `${statusColor(result)}20`,
+                  whiteSpace: 'nowrap',
+                }}>
+                  {statusLabel(result.status)}
+                </span>
                 <span style={{ fontSize: 13, color: colors.ink }}>{result.message}</span>
               </div>
             )}

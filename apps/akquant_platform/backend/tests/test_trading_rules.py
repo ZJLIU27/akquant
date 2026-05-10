@@ -296,6 +296,25 @@ class TestTakeProfitRelease:
         )
         assert result["status"] in ("normal", "unknown")
 
+    def test_completed_after_sell_transaction(self):
+        result = self.evaluate(
+            _make_position(
+                transactions=[
+                    {"side": "buy", "trade_date": "2026-04-01", "quantity": 1000},
+                    {"side": "sell", "trade_date": "2026-04-10", "quantity": 500},
+                ]
+            ),
+            _make_market(
+                price=12.0,
+                indicators={"bbi": 10.5},
+                daily_df=_make_daily_df(20),
+            ),
+            {},
+        )
+        assert result["status"] == "completed"
+        assert result["level"] == "info"
+        assert "已完成" in result["message"]
+
 
 # ========== Three Quarter Bearish Volume ==========
 

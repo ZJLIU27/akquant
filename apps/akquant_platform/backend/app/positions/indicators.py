@@ -83,6 +83,42 @@ def compute_brick_series(daily_df: pd.DataFrame) -> pd.Series:
     return var5a - var2a
 
 
+def compute_kdj_series(
+    daily_df: pd.DataFrame,
+    period: int = 9,
+    k_period: int = 3,
+    d_period: int = 3,
+) -> dict[str, pd.Series]:
+    """KDJ oscillator using the common TongDaXin-style SMA smoothing."""
+    close = daily_df["close"].astype(float)
+    high = daily_df["high"].astype(float)
+    low = daily_df["low"].astype(float)
+
+    lowest = low.rolling(window=period, min_periods=period).min()
+    highest = high.rolling(window=period, min_periods=period).max()
+    denom = (highest - lowest).where((highest - lowest) != 0)
+    rsv = (close - lowest) / denom * 100
+    k = compute_tdx_sma(rsv, k_period, 1)
+    d = compute_tdx_sma(k, d_period, 1)
+    j = 3 * k - 2 * d
+    return {"kdj_k": k, "kdj_d": d, "kdj_j": j}
+
+
+def compute_macd_series(
+    close: pd.Series,
+    fast_period: int = 12,
+    slow_period: int = 26,
+    signal_period: int = 9,
+) -> dict[str, pd.Series]:
+    """MACD series: DIF, DEA, and TongDaXin-style MACD histogram."""
+    fast = compute_ema(close.astype(float), fast_period)
+    slow = compute_ema(close.astype(float), slow_period)
+    dif = fast - slow
+    dea = compute_ema(dif, signal_period)
+    macd = (dif - dea) * 2
+    return {"macd_dif": dif, "macd_dea": dea, "macd": macd}
+
+
 def compute_volume_ratio(volume: pd.Series, period: int = 20) -> pd.Series:
     """Volume ratio = current volume / average volume over period."""
     avg = compute_sma(volume, period)

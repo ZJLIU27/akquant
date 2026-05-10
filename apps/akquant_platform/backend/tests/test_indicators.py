@@ -11,6 +11,8 @@ from app.positions.indicators import (
     compute_brick_series,
     compute_ema,
     compute_indicators,
+    compute_kdj_series,
+    compute_macd_series,
     compute_single_pin_series,
     compute_sma,
     compute_tdx_sma,
@@ -104,6 +106,21 @@ class TestReferenceSubCharts:
         brick = compute_brick_series(df)
         assert len(brick) == len(df)
         assert brick.dropna().notna().all()
+
+    def test_kdj_series(self):
+        df = _make_daily_df(30)
+        kdj = compute_kdj_series(df)
+        assert set(kdj) == {"kdj_k", "kdj_d", "kdj_j"}
+        assert all(len(series) == len(df) for series in kdj.values())
+        assert kdj["kdj_k"].dropna().between(0, 100).all()
+        assert kdj["kdj_d"].dropna().between(0, 100).all()
+
+    def test_macd_series(self):
+        df = _make_daily_df(40)
+        macd = compute_macd_series(df["close"])
+        assert set(macd) == {"macd_dif", "macd_dea", "macd"}
+        assert all(len(series) == len(df) for series in macd.values())
+        assert macd["macd"].dropna().notna().all()
 
 
 class TestComputeVolumeRatio:
